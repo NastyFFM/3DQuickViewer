@@ -188,7 +188,7 @@ function MeshSnapshotController({ onSnapshot }: { onSnapshot: (points: ScanPoint
 /**
  * Shows a live wireframe preview of detected meshes
  */
-function LiveMeshPreview() {
+function LiveMeshPreview({ onVertexCount }: { onVertexCount?: (count: number) => void }) {
   const { gl, scene } = useThree();
   const meshGroupRef = useRef<THREE.Group>(new THREE.Group());
   const meshObjectsRef = useRef<Map<any, THREE.Mesh>>(new Map());
@@ -242,9 +242,9 @@ function LiveMeshPreview() {
 
         const material = new THREE.MeshBasicMaterial({
           wireframe: true,
-          color: 0x6c63ff,
+          color: 0x44ff88,
           transparent: true,
-          opacity: 0.12,
+          opacity: 0.3,
           side: THREE.DoubleSide,
         });
 
@@ -269,19 +269,28 @@ function LiveMeshPreview() {
         meshObjectsRef.current.delete(xrMesh);
       }
     }
+
+    // Report total vertex count
+    if (onVertexCount) {
+      let total = 0;
+      for (const m of meshObjectsRef.current.values()) {
+        total += (m.geometry.getAttribute('position')?.count ?? 0);
+      }
+      onVertexCount(total);
+    }
   });
 
   return null;
 }
 
-function ScanScene({ onSnapshot }: { onSnapshot: (points: ScanPoint[]) => void }) {
+function ScanScene({ onSnapshot, onVertexCount }: { onSnapshot: (points: ScanPoint[]) => void; onVertexCount?: (count: number) => void }) {
   return (
     <>
       <ambientLight intensity={1} />
       <directionalLight position={[5, 5, 5]} intensity={1} />
       <XROrigin />
       <MeshSnapshotController onSnapshot={onSnapshot} />
-      <LiveMeshPreview />
+      <LiveMeshPreview onVertexCount={onVertexCount} />
     </>
   );
 }
@@ -295,6 +304,7 @@ export function RoomScanViewer({ onExport }: RoomScanViewerProps) {
   const [scanning, setScanning] = useState(false);
   const [points, setPoints] = useState<ScanPoint[]>([]);
   const [snapshots, setSnapshots] = useState(0);
+  const [meshVertices, setMeshVertices] = useState(0);
 
   useEffect(() => {
     if (navigator.xr) {
@@ -419,7 +429,7 @@ export function RoomScanViewer({ onExport }: RoomScanViewerProps) {
           fontSize: 14,
           fontFamily: 'monospace',
         }}>
-          {points.length.toLocaleString()} Punkte · {snapshots} Snapshots
+          {points.length.toLocaleString()} Punkte · {snapshots} Snaps · Mesh: {meshVertices.toLocaleString()} V
         </div>
         {points.length > 0 && (
           <>
@@ -438,7 +448,7 @@ export function RoomScanViewer({ onExport }: RoomScanViewerProps) {
         camera={{ position: [0, 1.6, 0], fov: 60 }}
       >
         <XR store={store}>
-          <ScanScene onSnapshot={handleSnapshot} />
+          <ScanScene onSnapshot={handleSnapshot} onVertexCount={setMeshVertices} />
           <PointCloud points={points} />
         </XR>
       </Canvas>
