@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { createXRStore, XR, XROrigin, XRMeshes } from '@react-three/xr';
+import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import * as THREE from 'three';
 
 const store = createXRStore({
@@ -26,8 +26,6 @@ export interface ScanPoint {
 function PointCloud({ points }: { points: ScanPoint[] }) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const dummy = useRef(new THREE.Object3D());
-  const colorArray = useRef(new Float32Array(0));
-
   useEffect(() => {
     if (!meshRef.current || points.length === 0) return;
 
@@ -65,31 +63,6 @@ function PointCloud({ points }: { points: ScanPoint[] }) {
 }
 
 /**
- * Visualizes the XR detected meshes as wireframe overlay
- */
-function MeshOverlay() {
-  return (
-    <XRMeshes>
-      {(meshes) => (
-        <>
-          {meshes.map((mesh) => (
-            <primitive key={mesh.id} object={mesh}>
-              <meshBasicMaterial
-                wireframe
-                color="#6c63ff"
-                transparent
-                opacity={0.15}
-                side={THREE.DoubleSide}
-              />
-            </primitive>
-          ))}
-        </>
-      )}
-    </XRMeshes>
-  );
-}
-
-/**
  * Handles tap-to-place points using XR controller select events + raycasting
  */
 function ScanController({ onPoint }: { onPoint: (point: ScanPoint) => void }) {
@@ -113,7 +86,7 @@ function ScanController({ onPoint }: { onPoint: (point: ScanPoint) => void }) {
 
       for (const hit of intersects) {
         // Skip our own point cloud spheres (small geometry)
-        if (hit.object.geometry instanceof THREE.SphereGeometry) continue;
+        if ((hit.object as THREE.Mesh).geometry instanceof THREE.SphereGeometry) continue;
 
         const pos = hit.point;
         const normal = hit.face?.normal ?? new THREE.Vector3(0, 1, 0);
@@ -183,7 +156,7 @@ function AimReticle() {
 
       const intersects = raycaster.current.intersectObjects(scene.children, true);
       for (const hit of intersects) {
-        if (hit.object.geometry instanceof THREE.SphereGeometry) continue;
+        if ((hit.object as THREE.Mesh).geometry instanceof THREE.SphereGeometry) continue;
         if (hit.object === reticleRef.current) continue;
 
         reticleRef.current.visible = true;
