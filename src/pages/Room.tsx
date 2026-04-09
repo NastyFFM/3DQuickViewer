@@ -7,6 +7,7 @@ import { ModelViewer } from '../components/ModelViewer';
 import { ARViewer } from '../components/ARViewer';
 import { VRScene } from '../components/VRScene';
 import { XRViewer } from '../components/XRViewer';
+import { RoomScanViewer } from '../components/RoomScanViewer';
 import { ViewerErrorBoundary } from '../components/ViewerErrorBoundary';
 import { useModels } from '../hooks/useModels';
 import { useRoom } from '../hooks/useRoom';
@@ -18,6 +19,7 @@ export function Room() {
   const { models, addModelFromFile, deleteModelById, refresh } = useModels();
   const [viewing, setViewing] = useState<StoredModel | null>(null);
   const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr'>('3d');
+  const [showScan, setShowScan] = useState(false);
   const [isHost] = useState(() => {
     // First visitor to a room becomes host
     const key = `3dqv-host-${roomId}`;
@@ -95,6 +97,23 @@ export function Room() {
     return null;
   }
 
+  // Room scan mode
+  if (showScan) {
+    return (
+      <div style={{ width: '100vw', height: '100vh', background: '#0d0d1a', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '8px 12px', display: 'flex', gap: 8, alignItems: 'center', borderBottom: '1px solid #222' }}>
+          <button onClick={() => setShowScan(false)} style={backBtnStyle}>Zurueck</button>
+          <h2 style={{ color: '#fff', margin: 0, fontSize: 16 }}>Room Scan</h2>
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <ViewerErrorBoundary onReset={() => setShowScan(false)}>
+            <RoomScanViewer />
+          </ViewerErrorBoundary>
+        </div>
+      </div>
+    );
+  }
+
   // Viewing a model
   if (viewing) {
     const isGlb = viewing.fileName.toLowerCase().endsWith('.glb') || viewing.fileName.toLowerCase().endsWith('.gltf');
@@ -169,6 +188,21 @@ export function Room() {
           🧊 Raum {roomId}
         </h1>
         <div style={{ flex: 1 }} />
+        <button
+          onClick={() => setShowScan(true)}
+          style={{
+            padding: '6px 14px',
+            background: '#2d6a4f',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 8,
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: 'pointer',
+          }}
+        >
+          📷 Room Scan
+        </button>
         <div style={{
           display: 'flex',
           alignItems: 'center',
