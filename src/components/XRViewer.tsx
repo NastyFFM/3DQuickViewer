@@ -21,7 +21,7 @@ function centerAndScale(object: THREE.Object3D) {
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z);
-  const scale = 0.5 / maxDim;
+  const scale = 1.5 / maxDim;
   object.position.sub(center);
   object.scale.multiplyScalar(scale);
 }
