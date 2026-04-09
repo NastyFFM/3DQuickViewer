@@ -6,6 +6,7 @@ import { ModelGallery } from '../components/ModelGallery';
 import { ModelViewer } from '../components/ModelViewer';
 import { ARViewer } from '../components/ARViewer';
 import { VRScene } from '../components/VRScene';
+import { XRViewer } from '../components/XRViewer';
 import { ViewerErrorBoundary } from '../components/ViewerErrorBoundary';
 import { useModels } from '../hooks/useModels';
 import { useRoom } from '../hooks/useRoom';
@@ -16,7 +17,7 @@ export function Room() {
   const navigate = useNavigate();
   const { models, addModelFromFile, deleteModelById, refresh } = useModels();
   const [viewing, setViewing] = useState<StoredModel | null>(null);
-  const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'vr'>('3d');
+  const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr'>('3d');
   const [isHost] = useState(() => {
     // First visitor to a room becomes host
     const key = `3dqv-host-${roomId}`;
@@ -122,6 +123,12 @@ export function Room() {
               </button>
             )}
             <button
+              onClick={() => setViewMode('xr')}
+              style={viewMode === 'xr' ? tabActiveStyle : tabStyle}
+            >
+              XR
+            </button>
+            <button
               onClick={() => setViewMode('vr')}
               style={viewMode === 'vr' ? tabActiveStyle : tabStyle}
             >
@@ -138,6 +145,9 @@ export function Room() {
             )}
             {viewMode === 'ar' && (
               <ARViewer modelData={viewing.data} fileName={viewing.fileName} />
+            )}
+            {viewMode === 'xr' && (
+              <XRViewer modelData={viewing.data} fileName={viewing.fileName} />
             )}
             {viewMode === 'vr' && (
               <VRScene modelData={viewing.data} fileName={viewing.fileName} />
