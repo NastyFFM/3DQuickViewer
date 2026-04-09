@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { Environment } from '@react-three/drei';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -27,9 +27,21 @@ function centerAndScale(object: THREE.Object3D) {
   object.scale.multiplyScalar(scale);
 }
 
-function VRModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: string }) {
+/**
+ * Uses the same pattern as Three.js webxr_xr_dragging example:
+ * - Get XR controllers from renderer
+ * - On selectstart: raycast, if hit → controller.attach(object) (6DOF parent)
+ * - On selectend: scene.attach(object) (detach, keep world transform)
+ */
+function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: string }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
+  const groupRef = useRef<THREE.Group>(null);
+  const { gl, scene } = useThree();
+  const raycaster = useRef(new THREE.Raycaster());
+  const tempMatrix = useRef(new THREE.Matrix4());
+  const grabbedBy = useRef<THREE.XRTargetRaySpace | null>(null);
 
+  // Load model
   useEffect(() => {
     const ext = fileName.toLowerCase().split('.').pop();
     try {
@@ -48,7 +60,9 @@ function VRModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: st
       } else if (ext === 'stl') {
         const loader = new STLLoader();
         const geometry = loader.parse(modelData);
-        const material = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.3, roughness: 0.6 });
+        const material = new THREE.MeshStandardMaterial({
+          color: 0x888888, metalness: 0.3, roughness: 0.6,
+        });
         const mesh = new THREE.Mesh(geometry, material);
         centerAndScale(mesh);
         setObject(mesh);
@@ -58,10 +72,63 @@ function VRModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: st
     }
   }, [modelData, fileName]);
 
+  // Setup XR controller grab events
+  useEffect(() => {
+    const renderer = gl as THREE.WebGLRenderer;
+
+    function onSelectStart(this: THREE.XRTargetRaySpace) {
+      const controller = this;
+      if (!groupRef.current) return;
+
+      // Raycast from controller into scene
+      tempMatrix.current.identity().extractRotation(controller.matrixWorld);
+      raycaster.current.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.current.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix.current);
+
+      const intersects = raycaster.current.intersectObject(groupRef.current, true);
+      if (intersects.length > 0) {
+        // Attach model to controller — follows position + rotation automatically
+        controller.attach(groupRef.current);
+        grabbedBy.current = controller;
+      }
+    }
+
+    function onSelectEnd(this: THREE.XRTargetRaySpace) {
+      const controller = this;
+      if (grabbedBy.current === controller && groupRef.current) {
+        // Detach back to scene, preserving world transform
+        scene.attach(groupRef.current);
+        grabbedBy.current = null;
+      }
+    }
+
+    // Register for both controllers (0 = left or first, 1 = right or second)
+    const controller0 = renderer.xr.getController(0);
+    const controller1 = renderer.xr.getController(1);
+
+    controller0.addEventListener('selectstart', onSelectStart);
+    controller0.addEventListener('selectend', onSelectEnd);
+    controller1.addEventListener('selectstart', onSelectStart);
+    controller1.addEventListener('selectend', onSelectEnd);
+
+    // Add controllers to scene so they're part of the scene graph
+    scene.add(controller0);
+    scene.add(controller1);
+
+    return () => {
+      controller0.removeEventListener('selectstart', onSelectStart);
+      controller0.removeEventListener('selectend', onSelectEnd);
+      controller1.removeEventListener('selectstart', onSelectStart);
+      controller1.removeEventListener('selectend', onSelectEnd);
+      scene.remove(controller0);
+      scene.remove(controller1);
+    };
+  }, [gl, scene]);
+
   if (!object) return null;
 
   return (
-    <group position={[0, 1.2, -1.5]}>
+    <group ref={groupRef} position={[0, 1.2, -1.5]}>
       <primitive object={object} />
     </group>
   );
@@ -121,7 +188,7 @@ export function VRScene({ modelData, fileName }: VRSceneProps) {
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
           <XROrigin />
-          <VRModel modelData={modelData} fileName={fileName} />
+          <GrabbableModel modelData={modelData} fileName={fileName} />
           <Floor />
           <GridFloor />
           <Environment preset="city" />
