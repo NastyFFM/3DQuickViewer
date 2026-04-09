@@ -55,6 +55,9 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
     scale: number;
     midpoint: THREE.Vector3;
     objectPos: THREE.Vector3;
+    // Angle between controllers projected on XZ plane
+    angle: number;
+    objectRotY: number;
   } | null>(null);
 
   useEffect(() => {
@@ -130,11 +133,14 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
       const p1 = getControllerPos(grab.current.controllerIndex);
       const p2 = ctrlPos;
       if (p1 && p2) {
+        const diff = p2.clone().sub(p1);
         twoHandStart.current = {
           dist: p1.distanceTo(p2),
           scale: groupRef.current.scale.x,
           midpoint: p1.clone().add(p2).multiplyScalar(0.5),
           objectPos: groupRef.current.position.clone(),
+          angle: Math.atan2(diff.x, diff.z),
+          objectRotY: groupRef.current.rotation.y,
         };
       }
     }
@@ -206,6 +212,11 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
           const newScale = Math.max(0.05, Math.min(20, ts.scale * scaleFactor));
           groupRef.current.scale.setScalar(newScale);
         }
+
+        // Rotate Y: angle change between controllers on XZ plane
+        const currentDiff = p2.clone().sub(p1);
+        const currentAngle = Math.atan2(currentDiff.x, currentDiff.z);
+        groupRef.current.rotation.y = ts.objectRotY + (currentAngle - ts.angle);
 
         // Move: follow midpoint delta
         const currentMid = p1.clone().add(p2).multiplyScalar(0.5);
