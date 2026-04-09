@@ -86,7 +86,7 @@ export function Room() {
   }, [refresh]);
 
   const shareUrl = typeof window !== 'undefined'
-    ? `${window.location.origin}/room/${roomId}`
+    ? `${window.location.origin}${import.meta.env.BASE_URL}room/${roomId}`
     : '';
 
   if (!roomId) {
