@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Environment } from '@react-three/drei';
-import { createXRStore, XR, XROrigin } from '@react-three/xr';
+import { createXRStore, XR, XROrigin, useXR } from '@react-three/xr';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
@@ -27,21 +27,38 @@ function centerAndScale(object: THREE.Object3D) {
   object.scale.multiplyScalar(scale);
 }
 
+// Standard 6DOF grab: object follows controller position + rotation
+// Two-hand grab: scale by changing distance between hands
 function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: string }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const groupRef = useRef<THREE.Group>(null);
-
-  // Grab state
-  const isGrabbed = useRef(false);
-  const grabPointerId = useRef<number | null>(null);
-  const grabOffset = useRef(new THREE.Vector3());
-  const grabStartPos = useRef(new THREE.Vector3());
   const [hovered, setHovered] = useState(false);
 
-  // Two-hand rotate state
-  const activePointers = useRef<Map<number, THREE.Vector3>>(new Map());
-  const initialAngle = useRef<number | null>(null);
-  const initialRotationY = useRef(0);
+  // Grab state
+  // We store the offset matrix: when grabbed, offsetMatrix = controller.inverse * object
+  // Each frame: object.matrix = controller * offsetMatrix
+  const grabState = useRef<{
+    pointerId: number;
+    // The world-space position of the pointer at grab start
+    startPointerPos: THREE.Vector3;
+    // The object's position at grab start
+    startObjectPos: THREE.Vector3;
+    // The object's quaternion at grab start
+    startObjectQuat: THREE.Quaternion;
+    // Pointer direction at grab start (for rotation tracking)
+    startPointerDir: THREE.Vector3;
+  } | null>(null);
+
+  // Second grab for scale
+  const secondGrab = useRef<{
+    pointerId: number;
+    startPointerPos: THREE.Vector3;
+  } | null>(null);
+  const initialGrabDist = useRef<number>(1);
+  const initialScale = useRef<number>(1);
+
+  // Track current pointer positions per frame via the ray intersection
+  const pointerPositions = useRef<Map<number, THREE.Vector3>>(new Map());
 
   useEffect(() => {
     const ext = fileName.toLowerCase().split('.').pop();
@@ -71,77 +88,108 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
     }
   }, [modelData, fileName]);
 
-  const handlePointerDown = useCallback((e: THREE.Event & { pointerId?: number; point?: THREE.Vector3 }) => {
-    if ('stopPropagation' in e && typeof e.stopPropagation === 'function') e.stopPropagation();
+  const handlePointerDown = useCallback((e: any) => {
     if (!groupRef.current) return;
-
     const pointerId = e.pointerId ?? 0;
-    const point = e.point ?? new THREE.Vector3();
+    const point: THREE.Vector3 = e.point ?? new THREE.Vector3();
 
-    activePointers.current.set(pointerId, point.clone());
-
-    if (activePointers.current.size === 1) {
-      // Single grab — move
-      isGrabbed.current = true;
-      grabPointerId.current = pointerId;
-      grabOffset.current.copy(groupRef.current.position).sub(point);
-      grabStartPos.current.copy(point);
-    } else if (activePointers.current.size === 2) {
-      // Two-hand — rotate Y
-      const pts = [...activePointers.current.values()];
-      initialAngle.current = Math.atan2(pts[1].x - pts[0].x, pts[1].z - pts[0].z);
-      initialRotationY.current = groupRef.current.rotation.y;
+    if (!grabState.current) {
+      // First grab — 6DOF move
+      grabState.current = {
+        pointerId,
+        startPointerPos: point.clone(),
+        startObjectPos: groupRef.current.position.clone(),
+        startObjectQuat: groupRef.current.quaternion.clone(),
+        startPointerDir: point.clone().sub(groupRef.current.position).normalize(),
+      };
+      pointerPositions.current.set(pointerId, point.clone());
+    } else if (!secondGrab.current && pointerId !== grabState.current.pointerId) {
+      // Second grab — scale
+      secondGrab.current = {
+        pointerId,
+        startPointerPos: point.clone(),
+      };
+      pointerPositions.current.set(pointerId, point.clone());
+      const p1 = pointerPositions.current.get(grabState.current.pointerId) ?? grabState.current.startPointerPos;
+      initialGrabDist.current = p1.distanceTo(point);
+      initialScale.current = groupRef.current.scale.x;
     }
   }, []);
 
-  const handlePointerMove = useCallback((e: THREE.Event & { pointerId?: number; point?: THREE.Vector3 }) => {
-    if (!groupRef.current) return;
-
+  const handlePointerMove = useCallback((e: any) => {
     const pointerId = e.pointerId ?? 0;
-    const point = e.point ?? new THREE.Vector3();
+    const point: THREE.Vector3 = e.point ?? new THREE.Vector3();
 
-    if (activePointers.current.has(pointerId)) {
-      activePointers.current.set(pointerId, point.clone());
-    }
-
-    if (activePointers.current.size === 2 && initialAngle.current !== null) {
-      // Two-hand rotate around Y axis
-      const pts = [...activePointers.current.values()];
-      const currentAngle = Math.atan2(pts[1].x - pts[0].x, pts[1].z - pts[0].z);
-      const deltaAngle = currentAngle - initialAngle.current;
-      groupRef.current.rotation.y = initialRotationY.current + deltaAngle;
-    } else if (isGrabbed.current && grabPointerId.current === pointerId) {
-      // Single grab move on X + Z plane (keep Y fixed)
-      const newPos = point.clone().add(grabOffset.current);
-      groupRef.current.position.x = newPos.x;
-      groupRef.current.position.z = newPos.z;
-      // Keep original Y (height)
+    // Always update tracked position
+    if (pointerPositions.current.has(pointerId)) {
+      pointerPositions.current.set(pointerId, point.clone());
     }
   }, []);
 
-  const handlePointerUp = useCallback((e: THREE.Event & { pointerId?: number }) => {
+  const handlePointerUp = useCallback((e: any) => {
     const pointerId = e.pointerId ?? 0;
-    activePointers.current.delete(pointerId);
+    pointerPositions.current.delete(pointerId);
 
-    if (pointerId === grabPointerId.current) {
-      isGrabbed.current = false;
-      grabPointerId.current = null;
-    }
-
-    if (activePointers.current.size < 2) {
-      initialAngle.current = null;
+    if (secondGrab.current && secondGrab.current.pointerId === pointerId) {
+      secondGrab.current = null;
+    } else if (grabState.current && grabState.current.pointerId === pointerId) {
+      grabState.current = null;
+      // If second was active, promote it to primary
+      if (secondGrab.current && groupRef.current) {
+        const sp = secondGrab.current;
+        const currentPos = pointerPositions.current.get(sp.pointerId) ?? sp.startPointerPos;
+        grabState.current = {
+          pointerId: sp.pointerId,
+          startPointerPos: currentPos.clone(),
+          startObjectPos: groupRef.current.position.clone(),
+          startObjectQuat: groupRef.current.quaternion.clone(),
+          startPointerDir: currentPos.clone().sub(groupRef.current.position).normalize(),
+        };
+        secondGrab.current = null;
+      }
     }
   }, []);
 
-  // Highlight on hover
+  // Apply transforms each frame
   useFrame(() => {
     if (!groupRef.current) return;
+
+    const g = grabState.current;
+    if (!g) return;
+
+    const currentP1 = pointerPositions.current.get(g.pointerId);
+    if (!currentP1) return;
+
+    if (secondGrab.current) {
+      // Two-hand: scale based on distance between pointers
+      const currentP2 = pointerPositions.current.get(secondGrab.current.pointerId);
+      if (currentP2 && initialGrabDist.current > 0.01) {
+        const currentDist = currentP1.distanceTo(currentP2);
+        const scaleFactor = currentDist / initialGrabDist.current;
+        const newScale = Math.max(0.05, Math.min(20, initialScale.current * scaleFactor));
+        groupRef.current.scale.setScalar(newScale);
+      }
+
+      // Also move to midpoint of both hands
+      const currentP2b = pointerPositions.current.get(secondGrab.current.pointerId);
+      if (currentP2b) {
+        const midpoint = currentP1.clone().add(currentP2b).multiplyScalar(0.5);
+        const startMid = g.startPointerPos.clone().add(secondGrab.current.startPointerPos).multiplyScalar(0.5);
+        const delta = midpoint.clone().sub(startMid);
+        groupRef.current.position.copy(g.startObjectPos).add(delta);
+      }
+    } else {
+      // Single hand: move object (full 3D, follows pointer)
+      const delta = currentP1.clone().sub(g.startPointerPos);
+      groupRef.current.position.copy(g.startObjectPos).add(delta);
+    }
+
+    // Hover highlight
     groupRef.current.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        const mat = mesh.material as THREE.MeshStandardMaterial;
+        const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
         if (mat.emissive) {
-          mat.emissive.setHex(hovered || isGrabbed.current ? 0x222244 : 0x000000);
+          mat.emissive.setHex(hovered || grabState.current ? 0x222244 : 0x000000);
         }
       }
     });
