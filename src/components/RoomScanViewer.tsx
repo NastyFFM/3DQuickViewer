@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import * as THREE from 'three';
 
@@ -7,10 +7,12 @@ import * as THREE from 'three';
 const store = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
+  // depth-sensing requested as session feature
+  requiredFeatures: ['depth-sensing' as any],
   depthSensing: {
     usagePreference: ['cpu-optimized'],
     dataFormatPreference: ['luminance-alpha'],
-  },
+  } as any,
 });
 
 export interface ScanPoint {
