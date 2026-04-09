@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import * as THREE from 'three';
