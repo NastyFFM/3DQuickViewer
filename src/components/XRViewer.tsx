@@ -69,15 +69,17 @@ function HitTestPlacement({ onPlace }: { onPlace: (pos: THREE.Vector3) => void }
   const lastPosition = useRef<THREE.Vector3 | null>(null);
   const { gl } = useThree();
 
-  // Hit test callback: receives results array + getWorldMatrix helper
+  const matrixHelper = useRef(new THREE.Matrix4());
+
+  // Hit test callback: receives results array + getWorldMatrix(target, result) => boolean
   useXRHitTest((results, getWorldMatrix) => {
     if (results.length > 0 && reticleRef.current) {
-      const matrix = getWorldMatrix(results[0]);
-      if (matrix) {
+      const valid = getWorldMatrix(matrixHelper.current, results[0]);
+      if (valid) {
         reticleRef.current.visible = true;
-        reticleRef.current.matrix.copy(matrix);
+        reticleRef.current.matrix.copy(matrixHelper.current);
         const pos = new THREE.Vector3();
-        pos.setFromMatrixPosition(matrix);
+        pos.setFromMatrixPosition(matrixHelper.current);
         lastPosition.current = pos;
       }
     }
