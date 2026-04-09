@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import '@google/model-viewer';
 
 interface ARViewerProps {
@@ -48,29 +48,51 @@ export function ARViewer({ modelData, fileName, style }: ARViewerProps) {
     );
   }
 
+  // Use ref to create model-viewer element imperatively (avoids JSX type issues)
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!blobUrl || !containerRef.current) return;
+
+    // Clear previous
+    containerRef.current.innerHTML = '';
+
+    const mv = document.createElement('model-viewer');
+    mv.setAttribute('src', blobUrl);
+    mv.setAttribute('alt', fileName);
+    mv.setAttribute('camera-controls', '');
+    mv.setAttribute('touch-action', 'pan-y');
+    mv.setAttribute('auto-rotate', '');
+    mv.setAttribute('shadow-intensity', '1');
+    mv.setAttribute('environment-image', 'neutral');
+    mv.setAttribute('exposure', '1');
+    mv.style.width = '100%';
+    mv.style.height = '100%';
+    mv.style.setProperty('--poster-color', 'transparent');
+
+    if (isHttps) {
+      mv.setAttribute('ar', '');
+      mv.setAttribute('ar-modes', 'webxr scene-viewer quick-look');
+    }
+
+    containerRef.current.appendChild(mv);
+
+    return () => {
+      mv.remove();
+    };
+  }, [blobUrl, fileName, isHttps]);
+
   if (!blobUrl) return null;
+
+  const infoText = isHttps
+    ? (isMobile
+        ? 'Tippe auf das AR-Icon im Viewer um AR zu starten'
+        : 'AR auf dem Handy verfuegbar — hier 3D-Vorschau')
+    : 'AR benoetigt HTTPS — nach Deploy verfuegbar. Hier 3D-Vorschau.';
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#1a1a2e', overflow: 'hidden', ...style }}>
-      <model-viewer
-        src={blobUrl}
-        alt={fileName}
-        // Only enable AR on HTTPS — WebXR/SceneViewer/QuickLook all require secure context
-        {...(isHttps ? { ar: true, 'ar-modes': 'webxr scene-viewer quick-look' } : {})}
-        camera-controls={true}
-        touch-action="pan-y"
-        auto-rotate={true}
-        shadow-intensity="1"
-        environment-image="neutral"
-        exposure="1"
-        style={{
-          width: '100%',
-          height: '100%',
-          '--poster-color': 'transparent',
-        } as React.CSSProperties}
-      />
-
-      {/* Info banner */}
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       <div style={{
         position: 'absolute',
         bottom: 16,
@@ -85,11 +107,7 @@ export function ARViewer({ modelData, fileName, style }: ARViewerProps) {
         maxWidth: '90%',
         pointerEvents: 'none',
       }}>
-        {isHttps
-          ? (isMobile
-              ? 'Tippe auf das AR-Icon im Viewer um AR zu starten'
-              : 'AR auf dem Handy verfuegbar — hier 3D-Vorschau')
-          : 'AR benoetigt HTTPS — nach Vercel-Deploy verfuegbar. Hier 3D-Vorschau.'}
+        {infoText}
       </div>
     </div>
   );
