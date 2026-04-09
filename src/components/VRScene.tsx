@@ -72,7 +72,7 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
   }, [modelData, fileName]);
 
   const handlePointerDown = useCallback((e: THREE.Event & { pointerId?: number; point?: THREE.Vector3 }) => {
-    e.stopPropagation?.();
+    if ('stopPropagation' in e && typeof e.stopPropagation === 'function') e.stopPropagation();
     if (!groupRef.current) return;
 
     const pointerId = e.pointerId ?? 0;
