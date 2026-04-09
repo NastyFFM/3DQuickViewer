@@ -7,12 +7,7 @@ import * as THREE from 'three';
 const store = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
-  // depth-sensing requested as session feature
-  requiredFeatures: ['depth-sensing' as any],
-  depthSensing: {
-    usagePreference: ['cpu-optimized'],
-    dataFormatPreference: ['luminance-alpha'],
-  } as any,
+  meshDetection: true,
 });
 
 export interface ScanPoint {
@@ -71,88 +66,86 @@ function DepthSnapshotController({ onSnapshot, onDepthInfo }: {
   const captureDepthSnapshot = useCallback(() => {
     const renderer = gl as THREE.WebGLRenderer;
     const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
-    const session = renderer.xr.getSession();
     const refSpace = renderer.xr.getReferenceSpace();
-    if (!frame || !session || !refSpace) {
+    if (!frame || !refSpace) {
       onDepthInfo('Kein XR Frame');
-      return;
-    }
-
-    const pose = frame.getViewerPose(refSpace);
-    if (!pose || pose.views.length === 0) {
-      onDepthInfo('Kein Viewer Pose');
       return;
     }
 
     const newPoints: ScanPoint[] = [];
 
-    for (const view of pose.views) {
-      // Get depth information for this view
-      const depthInfo = (frame as any).getDepthInformation?.(view);
-      if (!depthInfo) {
-        onDepthInfo('Depth API nicht verfuegbar — Quest muss Depth Sensing unterstuetzen');
-        continue;
-      }
+    // Try depth sensing API first
+    const pose = frame.getViewerPose(refSpace);
+    if (pose) {
+      for (const view of pose.views) {
+        const depthInfo = (frame as any).getDepthInformation?.(view);
+        if (depthInfo) {
+          const w = depthInfo.width;
+          const h = depthInfo.height;
+          const viewMatrix = new THREE.Matrix4().fromArray(view.transform.inverse.matrix);
+          const projMatrix = new THREE.Matrix4().fromArray(view.projectionMatrix);
+          const invProjView = new THREE.Matrix4().multiplyMatrices(projMatrix, viewMatrix).invert();
+          const step = Math.max(1, Math.floor(Math.min(w, h) / 120));
 
-      const width = depthInfo.width;
-      const height = depthInfo.height;
+          for (let y = 0; y < h; y += step) {
+            for (let x = 0; x < w; x += step) {
+              const depth = depthInfo.getDepthInMeters(x / w, y / h);
+              if (depth <= 0 || depth > 10 || !isFinite(depth)) continue;
 
-      // View and projection matrices
-      const viewMatrix = new THREE.Matrix4().fromArray(view.transform.inverse.matrix);
-      const projMatrix = new THREE.Matrix4().fromArray(view.projectionMatrix);
-      const invProjView = new THREE.Matrix4()
-        .multiplyMatrices(projMatrix, viewMatrix)
-        .invert();
+              const ndcX = (x / w) * 2 - 1;
+              const ndcY = 1 - (y / h) * 2;
+              const dir = new THREE.Vector3(ndcX, ndcY, -1).applyMatrix4(invProjView).normalize();
+              const vp = view.transform.position;
+              const pt = new THREE.Vector3(vp.x, vp.y, vp.z).add(dir.multiplyScalar(depth));
+              const t = Math.min(depth / 5, 1);
 
-      // Sample every pixel (or step for performance)
-      // Step size: 1 = every pixel, 2 = every other, etc.
-      const step = Math.max(1, Math.floor(Math.min(width, height) / 100));
-
-      let sampled = 0;
-      for (let y = 0; y < height; y += step) {
-        for (let x = 0; x < width; x += step) {
-          // Get raw depth at this pixel
-          const depth = depthInfo.getDepthInMeters(
-            x / width,   // normalized x
-            y / height    // normalized y
-          );
-
-          if (depth <= 0 || depth > 10 || !isFinite(depth)) continue;
-
-          // Convert pixel + depth to NDC
-          const ndcX = (x / width) * 2 - 1;
-          const ndcY = 1 - (y / height) * 2; // flip Y
-
-          // Unproject to world space
-          const worldPos = new THREE.Vector3(ndcX, ndcY, -1)
-            .applyMatrix4(invProjView)
-            .normalize();
-
-          // Scale by depth along view direction
-          const viewPos = view.transform.position;
-          const origin = new THREE.Vector3(viewPos.x, viewPos.y, viewPos.z);
-          const point = origin.add(worldPos.multiplyScalar(depth));
-
-          // Color by depth: close = warm, far = cool
-          const t = Math.min(depth / 5, 1);
-          const r = 1 - t * 0.5;
-          const g = 0.5 + t * 0.3;
-          const b = 0.3 + t * 0.7;
-
-          newPoints.push({
-            position: [point.x, point.y, point.z],
-            color: [r, g, b],
-            normal: [0, 1, 0], // no normal from depth
-          });
-          sampled++;
+              newPoints.push({
+                position: [pt.x, pt.y, pt.z],
+                color: [1 - t * 0.5, 0.5 + t * 0.3, 0.3 + t * 0.7],
+                normal: [0, 1, 0],
+              });
+            }
+          }
+          onDepthInfo(`Depth: ${w}x${h} step ${step} → ${newPoints.length} Punkte`);
         }
       }
+    }
 
-      onDepthInfo(`${width}x${height} @ step ${step} → ${sampled} Punkte`);
+    // Fallback: use mesh detection vertices (fresh from current frame)
+    if (newPoints.length === 0) {
+      const detectedMeshes = (frame as any).detectedMeshes as Set<any> | undefined;
+      if (detectedMeshes && detectedMeshes.size > 0) {
+        detectedMeshes.forEach((xrMesh: any) => {
+          const meshPose = frame.getPose(xrMesh.meshSpace, refSpace);
+          if (!meshPose) return;
+
+          const mat4 = new THREE.Matrix4().fromArray(meshPose.transform.matrix);
+          const vertices: Float32Array = xrMesh.vertices;
+          const vertexCount = vertices.length / 3;
+
+          for (let i = 0; i < vertexCount; i++) {
+            const worldPos = new THREE.Vector3(
+              vertices[i * 3], vertices[i * 3 + 1], vertices[i * 3 + 2]
+            ).applyMatrix4(mat4);
+
+            // Color by height
+            const h = worldPos.y;
+            const t = Math.min(Math.max((h + 1) / 3, 0), 1);
+            newPoints.push({
+              position: [worldPos.x, worldPos.y, worldPos.z],
+              color: [0.4 + t * 0.5, 0.8 - t * 0.3, 0.5],
+              normal: [0, 1, 0],
+            });
+          }
+        });
+        onDepthInfo(`Mesh: ${detectedMeshes.size} meshes → ${newPoints.length} Punkte`);
+      } else {
+        onDepthInfo('Keine Tiefendaten — schaue umher damit Quest die Umgebung scannt');
+      }
     }
 
     if (newPoints.length > 0) {
-      console.log(`[Scan] Depth snapshot: ${newPoints.length} points`);
+      console.log(`[Scan] Snapshot: ${newPoints.length} points`);
       onSnapshot(newPoints);
     }
   }, [gl, onSnapshot, onDepthInfo]);
