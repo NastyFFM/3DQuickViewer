@@ -38,10 +38,10 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
   const grabStartPos = useRef(new THREE.Vector3());
   const [hovered, setHovered] = useState(false);
 
-  // Scale state (two-hand pinch)
+  // Two-hand rotate state
   const activePointers = useRef<Map<number, THREE.Vector3>>(new Map());
-  const initialPinchDist = useRef<number | null>(null);
-  const initialScale = useRef(1);
+  const initialAngle = useRef<number | null>(null);
+  const initialRotationY = useRef(0);
 
   useEffect(() => {
     const ext = fileName.toLowerCase().split('.').pop();
@@ -87,10 +87,10 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
       grabOffset.current.copy(groupRef.current.position).sub(point);
       grabStartPos.current.copy(point);
     } else if (activePointers.current.size === 2) {
-      // Two-hand pinch — scale
+      // Two-hand — rotate Y
       const pts = [...activePointers.current.values()];
-      initialPinchDist.current = pts[0].distanceTo(pts[1]);
-      initialScale.current = groupRef.current.scale.x;
+      initialAngle.current = Math.atan2(pts[1].x - pts[0].x, pts[1].z - pts[0].z);
+      initialRotationY.current = groupRef.current.rotation.y;
     }
   }, []);
 
@@ -104,16 +104,18 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
       activePointers.current.set(pointerId, point.clone());
     }
 
-    if (activePointers.current.size === 2 && initialPinchDist.current !== null) {
-      // Two-hand scale
+    if (activePointers.current.size === 2 && initialAngle.current !== null) {
+      // Two-hand rotate around Y axis
       const pts = [...activePointers.current.values()];
-      const dist = pts[0].distanceTo(pts[1]);
-      const scaleFactor = dist / initialPinchDist.current;
-      const newScale = Math.max(0.1, Math.min(10, initialScale.current * scaleFactor));
-      groupRef.current.scale.setScalar(newScale);
+      const currentAngle = Math.atan2(pts[1].x - pts[0].x, pts[1].z - pts[0].z);
+      const deltaAngle = currentAngle - initialAngle.current;
+      groupRef.current.rotation.y = initialRotationY.current + deltaAngle;
     } else if (isGrabbed.current && grabPointerId.current === pointerId) {
-      // Single grab move
-      groupRef.current.position.copy(point).add(grabOffset.current);
+      // Single grab move on X + Z plane (keep Y fixed)
+      const newPos = point.clone().add(grabOffset.current);
+      groupRef.current.position.x = newPos.x;
+      groupRef.current.position.z = newPos.z;
+      // Keep original Y (height)
     }
   }, []);
 
@@ -127,7 +129,7 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
     }
 
     if (activePointers.current.size < 2) {
-      initialPinchDist.current = null;
+      initialAngle.current = null;
     }
   }, []);
 
