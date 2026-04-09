@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { Environment } from '@react-three/drei';
-import { createXRStore, XR, XROrigin, useXR } from '@react-three/xr';
+import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
