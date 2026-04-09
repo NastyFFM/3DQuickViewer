@@ -1,5 +1,5 @@
-import { useRef, useEffect, useState, useCallback } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { useRef, useEffect, useState } from 'react';
+import { Canvas } from '@react-three/fiber';
 import { Environment } from '@react-three/drei';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -27,51 +27,8 @@ function centerAndScale(object: THREE.Object3D) {
   object.scale.multiplyScalar(scale);
 }
 
-/**
- * Reads the grip position of an XR input source directly from the XRFrame.
- * This is the gold-standard way to get controller/hand positions.
- */
-function getInputSourcePosition(
-  renderer: THREE.WebGLRenderer,
-  source: XRInputSource,
-): THREE.Vector3 | null {
-  const frame = (renderer.xr as any).getFrame?.();
-  const refSpace = renderer.xr.getReferenceSpace();
-  if (!frame || !refSpace) return null;
-
-  // Use gripSpace for controllers, targetRaySpace as fallback (hands)
-  const space = source.gripSpace ?? source.targetRaySpace;
-  const pose = frame.getPose(space, refSpace);
-  if (!pose) return null;
-
-  const p = pose.transform.position;
-  return new THREE.Vector3(p.x, p.y, p.z);
-}
-
-function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: string }) {
+function VRModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: string }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
-  const groupRef = useRef<THREE.Group>(null);
-  const { gl } = useThree();
-  const [hovered, setHovered] = useState(false);
-
-  // Store which handedness is grabbing + offset
-  const grab = useRef<{
-    handedness: XRHandedness;
-    offset: THREE.Vector3;
-  } | null>(null);
-
-  const secondGrab = useRef<{
-    handedness: XRHandedness;
-  } | null>(null);
-
-  const twoHandStart = useRef<{
-    dist: number;
-    scale: number;
-    midpoint: THREE.Vector3;
-    objectPos: THREE.Vector3;
-    angle: number;
-    objectRotY: number;
-  } | null>(null);
 
   useEffect(() => {
     const ext = fileName.toLowerCase().split('.').pop();
@@ -101,174 +58,10 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
     }
   }, [modelData, fileName]);
 
-  // Find input source position by handedness
-  const getPosByHandedness = useCallback((handedness: XRHandedness): THREE.Vector3 | null => {
-    const renderer = gl as THREE.WebGLRenderer;
-    const session = renderer.xr.getSession();
-    if (!session) return null;
-
-    for (const source of session.inputSources) {
-      if (source.handedness === handedness) {
-        return getInputSourcePosition(renderer, source);
-      }
-    }
-    return null;
-  }, [gl]);
-
-  // Determine handedness from the pointer event
-  const getHandednessFromEvent = useCallback((e: any): XRHandedness => {
-    // Try to get handedness from the event's input source
-    if (e.inputSource?.handedness) return e.inputSource.handedness;
-
-    // Fallback: check the nativeEvent or XR details
-    const nativeEvent = e.nativeEvent ?? e;
-    if (nativeEvent.inputSource?.handedness) return nativeEvent.inputSource.handedness;
-
-    // Last resort: compare ray origin with input source positions
-    const rayOrigin = e.ray?.origin;
-    if (rayOrigin) {
-      const renderer = gl as THREE.WebGLRenderer;
-      const session = renderer.xr.getSession();
-      if (session) {
-        let closest: XRHandedness = 'none';
-        let closestDist = Infinity;
-        for (const source of session.inputSources) {
-          const pos = getInputSourcePosition(renderer, source);
-          if (pos) {
-            const dist = pos.distanceTo(rayOrigin);
-            if (dist < closestDist) {
-              closestDist = dist;
-              closest = source.handedness;
-            }
-          }
-        }
-        if (closest !== 'none') return closest;
-      }
-    }
-
-    return 'right'; // default fallback
-  }, [gl]);
-
-  const handlePointerDown = useCallback((e: any) => {
-    if (!groupRef.current) return;
-
-    const handedness = getHandednessFromEvent(e);
-    const pos = getPosByHandedness(handedness);
-    if (!pos) return;
-
-    if (!grab.current) {
-      // First grab
-      grab.current = {
-        handedness,
-        offset: groupRef.current.position.clone().sub(pos),
-      };
-    } else if (!secondGrab.current && handedness !== grab.current.handedness) {
-      // Second grab (other hand)
-      secondGrab.current = { handedness };
-
-      const p1 = getPosByHandedness(grab.current.handedness);
-      if (p1) {
-        const diff = pos.clone().sub(p1);
-        twoHandStart.current = {
-          dist: p1.distanceTo(pos),
-          scale: groupRef.current.scale.x,
-          midpoint: p1.clone().add(pos).multiplyScalar(0.5),
-          objectPos: groupRef.current.position.clone(),
-          angle: Math.atan2(diff.x, diff.z),
-          objectRotY: groupRef.current.rotation.y,
-        };
-      }
-    }
-  }, [getHandednessFromEvent, getPosByHandedness]);
-
-  const handlePointerUp = useCallback((e: any) => {
-    if (!groupRef.current) return;
-
-    const handedness = getHandednessFromEvent(e);
-
-    if (secondGrab.current && secondGrab.current.handedness === handedness) {
-      // Secondary released
-      secondGrab.current = null;
-      twoHandStart.current = null;
-      // Update offset for remaining grab hand
-      if (grab.current) {
-        const p = getPosByHandedness(grab.current.handedness);
-        if (p) grab.current.offset = groupRef.current.position.clone().sub(p);
-      }
-    } else if (grab.current && grab.current.handedness === handedness) {
-      // Primary released
-      if (secondGrab.current) {
-        // Promote secondary
-        const secHand = secondGrab.current.handedness;
-        const secPos = getPosByHandedness(secHand);
-        if (secPos) {
-          grab.current = {
-            handedness: secHand,
-            offset: groupRef.current.position.clone().sub(secPos),
-          };
-        }
-        secondGrab.current = null;
-      } else {
-        grab.current = null;
-      }
-      twoHandStart.current = null;
-    }
-  }, [getHandednessFromEvent, getPosByHandedness]);
-
-  useFrame(() => {
-    if (!groupRef.current || !grab.current) return;
-
-    const p1 = getPosByHandedness(grab.current.handedness);
-    if (!p1) return;
-
-    if (secondGrab.current && twoHandStart.current) {
-      const p2 = getPosByHandedness(secondGrab.current.handedness);
-      if (p2) {
-        const ts = twoHandStart.current;
-
-        // Scale
-        const currentDist = p1.distanceTo(p2);
-        if (ts.dist > 0.01) {
-          const newScale = Math.max(0.05, Math.min(20, ts.scale * (currentDist / ts.dist)));
-          groupRef.current.scale.setScalar(newScale);
-        }
-
-        // Rotate Y
-        const diff = p2.clone().sub(p1);
-        const currentAngle = Math.atan2(diff.x, diff.z);
-        groupRef.current.rotation.y = ts.objectRotY + (currentAngle - ts.angle);
-
-        // Move by midpoint delta
-        const currentMid = p1.clone().add(p2).multiplyScalar(0.5);
-        const midDelta = currentMid.clone().sub(ts.midpoint);
-        groupRef.current.position.copy(ts.objectPos).add(midDelta);
-      }
-    } else {
-      // Single hand: object follows hand + offset
-      groupRef.current.position.copy(p1).add(grab.current.offset);
-    }
-
-    // Highlight
-    const isActive = hovered || !!grab.current;
-    groupRef.current.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
-        if (mat.emissive) mat.emissive.setHex(isActive ? 0x222244 : 0x000000);
-      }
-    });
-  });
-
   if (!object) return null;
 
   return (
-    <group
-      ref={groupRef}
-      position={[0, 1.2, -1.5]}
-      onPointerDown={handlePointerDown}
-      onPointerUp={handlePointerUp}
-      onPointerOver={() => setHovered(true)}
-      onPointerOut={() => setHovered(false)}
-    >
+    <group position={[0, 1.2, -1.5]}>
       <primitive object={object} />
     </group>
   );
@@ -328,7 +121,7 @@ export function VRScene({ modelData, fileName }: VRSceneProps) {
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
           <XROrigin />
-          <GrabbableModel modelData={modelData} fileName={fileName} />
+          <VRModel modelData={modelData} fileName={fileName} />
           <Floor />
           <GridFloor />
           <Environment preset="city" />
