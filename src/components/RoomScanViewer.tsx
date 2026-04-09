@@ -19,12 +19,7 @@ function LiveMeshPoints({ onInfo }: { onInfo: (info: string) => void }) {
   const groupRef = useRef(new THREE.Group());
   const pointsRef = useRef<THREE.Points | null>(null);
 
-  useEffect(() => {
-    const { scene } = (gl as any).__r3f?.root?.getState() ?? {};
-    // We'll add group in the JSX instead
-  }, []);
-
-  useFrame(({ scene }) => {
+  useFrame(() => {
     const renderer = gl as THREE.WebGLRenderer;
     const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
     const refSpace = renderer.xr.getReferenceSpace();
