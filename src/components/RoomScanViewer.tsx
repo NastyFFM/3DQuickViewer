@@ -6,7 +6,6 @@ import * as THREE from 'three';
 const store = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
-  meshDetection: true,
 });
 
 /**
