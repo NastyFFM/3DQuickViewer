@@ -150,21 +150,37 @@ function DepthSnapshotController({ onSnapshot, onDepthInfo }: {
     }
   }, [gl, onSnapshot, onDepthInfo]);
 
-  // Listen for select events (finger pinch / trigger)
+  // Listen for select on XR session (works with hands AND controllers)
   useEffect(() => {
     const renderer = gl as THREE.WebGLRenderer;
 
-    const controller0 = renderer.xr.getController(0);
-    const controller1 = renderer.xr.getController(1);
+    const onSelect = () => {
+      console.log('[Scan] Select event fired — capturing snapshot');
+      captureDepthSnapshot();
+    };
 
-    const onSelect = () => captureDepthSnapshot();
+    // Poll for session (might not be ready immediately)
+    let session: XRSession | null = null;
+    const interval = setInterval(() => {
+      const s = renderer.xr.getSession();
+      if (s && s !== session) {
+        session = s;
+        session.addEventListener('select', onSelect);
+        console.log('[Scan] Listening for select on XR session');
+      }
+    }, 500);
 
-    controller0.addEventListener('select', onSelect);
-    controller1.addEventListener('select', onSelect);
+    // Also listen on controllers as fallback
+    const c0 = renderer.xr.getController(0);
+    const c1 = renderer.xr.getController(1);
+    c0.addEventListener('select', onSelect);
+    c1.addEventListener('select', onSelect);
 
     return () => {
-      controller0.removeEventListener('select', onSelect);
-      controller1.removeEventListener('select', onSelect);
+      clearInterval(interval);
+      session?.removeEventListener('select', onSelect);
+      c0.removeEventListener('select', onSelect);
+      c1.removeEventListener('select', onSelect);
     };
   }, [gl, captureDepthSnapshot]);
 
