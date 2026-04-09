@@ -4,7 +4,9 @@ import { QRCodeSVG } from 'qrcode.react';
 import { DropZone } from '../components/DropZone';
 import { ModelGallery } from '../components/ModelGallery';
 import { ModelViewer } from '../components/ModelViewer';
+import { ARViewer } from '../components/ARViewer';
 import { VRScene } from '../components/VRScene';
+import { ViewerErrorBoundary } from '../components/ViewerErrorBoundary';
 import { useModels } from '../hooks/useModels';
 import { useRoom } from '../hooks/useRoom';
 import type { StoredModel } from '../types';
@@ -14,7 +16,7 @@ export function Room() {
   const navigate = useNavigate();
   const { models, addModelFromFile, deleteModelById, refresh } = useModels();
   const [viewing, setViewing] = useState<StoredModel | null>(null);
-  const [vrMode, setVrMode] = useState(false);
+  const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'vr'>('3d');
   const [isHost] = useState(() => {
     // First visitor to a room becomes host
     const key = `3dqv-host-${roomId}`;
@@ -55,6 +57,18 @@ export function Room() {
     await sendModelToPeers(modelId);
   }, [sendModelToPeers]);
 
+  const handleSave = useCallback((model: StoredModel) => {
+    const blob = new Blob([model.data], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = model.fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, []);
+
   // Refresh models when a transfer completes (transfers array shrinks)
   const [prevTransferCount, setPrevTransferCount] = useState(0);
   useEffect(() => {
@@ -80,35 +94,55 @@ export function Room() {
     return null;
   }
 
-  // Viewing a model in VR
-  if (viewing && vrMode) {
-    return (
-      <div style={{ width: '100vw', height: '100vh', background: '#0d0d1a' }}>
-        <button
-          onClick={() => setVrMode(false)}
-          style={backBtnStyle}
-        >
-          Zurueck
-        </button>
-        <VRScene modelData={viewing.data} fileName={viewing.fileName} />
-      </div>
-    );
-  }
-
-  // Viewing a model in 3D preview
+  // Viewing a model
   if (viewing) {
+    const isGlb = viewing.fileName.toLowerCase().endsWith('.glb') || viewing.fileName.toLowerCase().endsWith('.gltf');
+
     return (
       <div style={{ width: '100vw', height: '100vh', background: '#0d0d1a', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: 16, display: 'flex', gap: 12, alignItems: 'center' }}>
-          <button onClick={() => setViewing(null)} style={backBtnStyle}>Zurueck</button>
-          <h2 style={{ color: '#fff', margin: 0, fontSize: 18 }}>{viewing.name}</h2>
-          <div style={{ flex: 1 }} />
-          <button onClick={() => setVrMode(true)} style={vrBtnStyle}>
-            🥽 VR-Modus
-          </button>
+        {/* Header with tabs */}
+        <div style={{ padding: '8px 12px', display: 'flex', gap: 6, alignItems: 'center', borderBottom: '1px solid #222', flexWrap: 'wrap' }}>
+          <button onClick={() => { setViewing(null); setViewMode('3d'); }} style={backBtnStyle}>Zurueck</button>
+          <h2 style={{ color: '#fff', margin: 0, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '1 1 auto' }}>{viewing.name}</h2>
+
+          {/* View mode tabs */}
+          <div style={{ display: 'flex', gap: 2, background: 'rgba(255,255,255,0.06)', borderRadius: 10, padding: 3, flexShrink: 0 }}>
+            <button
+              onClick={() => setViewMode('3d')}
+              style={viewMode === '3d' ? tabActiveStyle : tabStyle}
+            >
+              3D
+            </button>
+            {isGlb && (
+              <button
+                onClick={() => setViewMode('ar')}
+                style={viewMode === 'ar' ? tabActiveStyle : tabStyle}
+              >
+                AR
+              </button>
+            )}
+            <button
+              onClick={() => setViewMode('vr')}
+              style={viewMode === 'vr' ? tabActiveStyle : tabStyle}
+            >
+              VR
+            </button>
+          </div>
         </div>
-        <div style={{ flex: 1 }}>
-          <ModelViewer modelData={viewing.data} fileName={viewing.fileName} />
+
+        {/* Viewer */}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
+            {viewMode === '3d' && (
+              <ModelViewer modelData={viewing.data} fileName={viewing.fileName} />
+            )}
+            {viewMode === 'ar' && (
+              <ARViewer modelData={viewing.data} fileName={viewing.fileName} />
+            )}
+            {viewMode === 'vr' && (
+              <VRScene modelData={viewing.data} fileName={viewing.fileName} />
+            )}
+          </ViewerErrorBoundary>
         </div>
       </div>
     );
@@ -197,6 +231,7 @@ export function Room() {
             transfers={transfers}
             onView={setViewing}
             onDelete={handleDelete}
+            onSave={handleSave}
             onSend={handleSend}
             onDownload={handleDownload}
             showSend={peers.length > 0}
@@ -216,6 +251,23 @@ const backBtnStyle: React.CSSProperties = {
   borderRadius: 8,
   fontSize: 14,
   cursor: 'pointer',
+};
+
+const tabStyle: React.CSSProperties = {
+  padding: '6px 14px',
+  background: 'transparent',
+  color: '#888',
+  border: 'none',
+  borderRadius: 8,
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const tabActiveStyle: React.CSSProperties = {
+  ...tabStyle,
+  background: '#6c63ff',
+  color: '#fff',
 };
 
 const vrBtnStyle: React.CSSProperties = {

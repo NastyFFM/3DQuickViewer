@@ -6,6 +6,7 @@ interface ModelGalleryProps {
   transfers?: TransferProgress[];
   onView: (model: StoredModel) => void;
   onDelete: (id: string) => void;
+  onSave?: (model: StoredModel) => void;
   onSend?: (id: string) => void;
   onDownload?: (id: string) => void;
   showSend?: boolean;
@@ -27,6 +28,7 @@ function ModelCard({
   progress,
   onView,
   onDelete,
+  onSave,
   onSend,
   onDownload,
   showSend,
@@ -40,6 +42,7 @@ function ModelCard({
   progress?: number;
   onView?: () => void;
   onDelete?: () => void;
+  onSave?: () => void;
   onSend?: () => void;
   onDownload?: () => void;
   showSend?: boolean;
@@ -81,9 +84,12 @@ function ModelCard({
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+      <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
         {isLocal && onView && (
           <button onClick={onView} style={btnStyle}>Ansehen</button>
+        )}
+        {isLocal && onSave && (
+          <button onClick={onSave} style={{ ...btnStyle, background: '#1565c0' }}>Speichern</button>
         )}
         {!isLocal && showDownload && onDownload && (
           <button onClick={onDownload} style={btnStyle}>Laden</button>
@@ -116,6 +122,7 @@ export function ModelGallery({
   transfers = [],
   onView,
   onDelete,
+  onSave,
   onSend,
   onDownload,
   showSend,
@@ -147,6 +154,7 @@ export function ModelGallery({
             progress={transfer?.progress}
             onView={() => onView(model)}
             onDelete={() => onDelete(model.id)}
+            onSave={onSave ? () => onSave(model) : undefined}
             onSend={onSend ? () => onSend(model.id) : undefined}
             showSend={showSend}
           />
