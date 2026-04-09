@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Environment } from '@react-three/drei';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -27,38 +27,35 @@ function centerAndScale(object: THREE.Object3D) {
   object.scale.multiplyScalar(scale);
 }
 
-// Standard 6DOF grab: object follows controller position + rotation
-// Two-hand grab: scale by changing distance between hands
+/**
+ * Standard 6DOF VR grab using controller world positions (not ray-object intersections).
+ * - Single hand: grab + full 3D move
+ * - Two hands: scale (distance) + move (midpoint)
+ */
 function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: string }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const groupRef = useRef<THREE.Group>(null);
+  const { gl } = useThree();
   const [hovered, setHovered] = useState(false);
 
-  // Grab state
-  // We store the offset matrix: when grabbed, offsetMatrix = controller.inverse * object
-  // Each frame: object.matrix = controller * offsetMatrix
-  const grabState = useRef<{
-    pointerId: number;
-    // The world-space position of the pointer at grab start
-    startPointerPos: THREE.Vector3;
-    // The object's position at grab start
-    startObjectPos: THREE.Vector3;
-    // The object's quaternion at grab start
-    startObjectQuat: THREE.Quaternion;
-    // Pointer direction at grab start (for rotation tracking)
-    startPointerDir: THREE.Vector3;
+  // Grab tracking - use controller indices (0, 1) not pointer IDs
+  const grab = useRef<{
+    controllerIndex: number;
+    // Offset: objectPos - controllerPos at grab time
+    offset: THREE.Vector3;
   } | null>(null);
 
-  // Second grab for scale
   const secondGrab = useRef<{
-    pointerId: number;
-    startPointerPos: THREE.Vector3;
+    controllerIndex: number;
   } | null>(null);
-  const initialGrabDist = useRef<number>(1);
-  const initialScale = useRef<number>(1);
 
-  // Track current pointer positions per frame via the ray intersection
-  const pointerPositions = useRef<Map<number, THREE.Vector3>>(new Map());
+  // Two-hand state
+  const twoHandStart = useRef<{
+    dist: number;
+    scale: number;
+    midpoint: THREE.Vector3;
+    objectPos: THREE.Vector3;
+  } | null>(null);
 
   useEffect(() => {
     const ext = fileName.toLowerCase().split('.').pop();
@@ -88,108 +85,145 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
     }
   }, [modelData, fileName]);
 
+  // Helper: get controller world position
+  const getControllerPos = useCallback((index: number): THREE.Vector3 | null => {
+    const renderer = gl as THREE.WebGLRenderer;
+    const controller = renderer.xr.getController(index);
+    if (!controller) return null;
+    const pos = new THREE.Vector3();
+    controller.getWorldPosition(pos);
+    // Check if controller is actually tracked (position not zero)
+    if (pos.lengthSq() < 0.0001) return null;
+    return pos;
+  }, [gl]);
+
   const handlePointerDown = useCallback((e: any) => {
     if (!groupRef.current) return;
-    const pointerId = e.pointerId ?? 0;
+
+    // Determine which controller triggered this
+    // Try both controllers - use whichever is closest to the intersection point
     const point: THREE.Vector3 = e.point ?? new THREE.Vector3();
+    const pos0 = getControllerPos(0);
+    const pos1 = getControllerPos(1);
 
-    if (!grabState.current) {
-      // First grab — 6DOF move
-      grabState.current = {
-        pointerId,
-        startPointerPos: point.clone(),
-        startObjectPos: groupRef.current.position.clone(),
-        startObjectQuat: groupRef.current.quaternion.clone(),
-        startPointerDir: point.clone().sub(groupRef.current.position).normalize(),
-      };
-      pointerPositions.current.set(pointerId, point.clone());
-    } else if (!secondGrab.current && pointerId !== grabState.current.pointerId) {
-      // Second grab — scale
-      secondGrab.current = {
-        pointerId,
-        startPointerPos: point.clone(),
-      };
-      pointerPositions.current.set(pointerId, point.clone());
-      const p1 = pointerPositions.current.get(grabState.current.pointerId) ?? grabState.current.startPointerPos;
-      initialGrabDist.current = p1.distanceTo(point);
-      initialScale.current = groupRef.current.scale.x;
+    let ctrlIdx = 0;
+    if (pos0 && pos1) {
+      const d0 = pos0.distanceTo(point);
+      const d1 = pos1.distanceTo(point);
+      ctrlIdx = d1 < d0 ? 1 : 0;
+    } else if (pos1 && !pos0) {
+      ctrlIdx = 1;
     }
-  }, []);
 
-  const handlePointerMove = useCallback((e: any) => {
-    const pointerId = e.pointerId ?? 0;
-    const point: THREE.Vector3 = e.point ?? new THREE.Vector3();
+    const ctrlPos = ctrlIdx === 0 ? pos0 : pos1;
+    if (!ctrlPos) return;
 
-    // Always update tracked position
-    if (pointerPositions.current.has(pointerId)) {
-      pointerPositions.current.set(pointerId, point.clone());
+    if (!grab.current) {
+      // First grab
+      const offset = groupRef.current.position.clone().sub(ctrlPos);
+      grab.current = { controllerIndex: ctrlIdx, offset };
+    } else if (!secondGrab.current && ctrlIdx !== grab.current.controllerIndex) {
+      // Second grab (different controller)
+      secondGrab.current = { controllerIndex: ctrlIdx };
+
+      // Init two-hand state
+      const p1 = getControllerPos(grab.current.controllerIndex);
+      const p2 = ctrlPos;
+      if (p1 && p2) {
+        twoHandStart.current = {
+          dist: p1.distanceTo(p2),
+          scale: groupRef.current.scale.x,
+          midpoint: p1.clone().add(p2).multiplyScalar(0.5),
+          objectPos: groupRef.current.position.clone(),
+        };
+      }
     }
-  }, []);
+  }, [getControllerPos]);
 
   const handlePointerUp = useCallback((e: any) => {
-    const pointerId = e.pointerId ?? 0;
-    pointerPositions.current.delete(pointerId);
-
-    if (secondGrab.current && secondGrab.current.pointerId === pointerId) {
-      secondGrab.current = null;
-    } else if (grabState.current && grabState.current.pointerId === pointerId) {
-      grabState.current = null;
-      // If second was active, promote it to primary
-      if (secondGrab.current && groupRef.current) {
-        const sp = secondGrab.current;
-        const currentPos = pointerPositions.current.get(sp.pointerId) ?? sp.startPointerPos;
-        grabState.current = {
-          pointerId: sp.pointerId,
-          startPointerPos: currentPos.clone(),
-          startObjectPos: groupRef.current.position.clone(),
-          startObjectQuat: groupRef.current.quaternion.clone(),
-          startPointerDir: currentPos.clone().sub(groupRef.current.position).normalize(),
-        };
-        secondGrab.current = null;
-      }
-    }
-  }, []);
-
-  // Apply transforms each frame
-  useFrame(() => {
     if (!groupRef.current) return;
 
-    const g = grabState.current;
-    if (!g) return;
+    // Determine which controller released
+    const point: THREE.Vector3 = e.point ?? new THREE.Vector3();
+    const pos0 = getControllerPos(0);
+    const pos1 = getControllerPos(1);
 
-    const currentP1 = pointerPositions.current.get(g.pointerId);
-    if (!currentP1) return;
-
-    if (secondGrab.current) {
-      // Two-hand: scale based on distance between pointers
-      const currentP2 = pointerPositions.current.get(secondGrab.current.pointerId);
-      if (currentP2 && initialGrabDist.current > 0.01) {
-        const currentDist = currentP1.distanceTo(currentP2);
-        const scaleFactor = currentDist / initialGrabDist.current;
-        const newScale = Math.max(0.05, Math.min(20, initialScale.current * scaleFactor));
-        groupRef.current.scale.setScalar(newScale);
-      }
-
-      // Also move to midpoint of both hands
-      const currentP2b = pointerPositions.current.get(secondGrab.current.pointerId);
-      if (currentP2b) {
-        const midpoint = currentP1.clone().add(currentP2b).multiplyScalar(0.5);
-        const startMid = g.startPointerPos.clone().add(secondGrab.current.startPointerPos).multiplyScalar(0.5);
-        const delta = midpoint.clone().sub(startMid);
-        groupRef.current.position.copy(g.startObjectPos).add(delta);
-      }
-    } else {
-      // Single hand: move object (full 3D, follows pointer)
-      const delta = currentP1.clone().sub(g.startPointerPos);
-      groupRef.current.position.copy(g.startObjectPos).add(delta);
+    let ctrlIdx = 0;
+    if (pos0 && pos1) {
+      const d0 = pos0.distanceTo(point);
+      const d1 = pos1.distanceTo(point);
+      ctrlIdx = d1 < d0 ? 1 : 0;
+    } else if (pos1 && !pos0) {
+      ctrlIdx = 1;
     }
 
-    // Hover highlight
+    if (secondGrab.current && secondGrab.current.controllerIndex === ctrlIdx) {
+      secondGrab.current = null;
+      twoHandStart.current = null;
+      // Recalculate offset for remaining grab
+      if (grab.current) {
+        const p = getControllerPos(grab.current.controllerIndex);
+        if (p) {
+          grab.current.offset = groupRef.current.position.clone().sub(p);
+        }
+      }
+    } else if (grab.current && grab.current.controllerIndex === ctrlIdx) {
+      // Primary released
+      if (secondGrab.current) {
+        // Promote secondary to primary
+        const secIdx = secondGrab.current.controllerIndex;
+        const secPos = getControllerPos(secIdx);
+        if (secPos) {
+          grab.current = {
+            controllerIndex: secIdx,
+            offset: groupRef.current.position.clone().sub(secPos),
+          };
+        }
+        secondGrab.current = null;
+      } else {
+        grab.current = null;
+      }
+      twoHandStart.current = null;
+    }
+  }, [getControllerPos]);
+
+  // Apply transform every frame based on controller positions
+  useFrame(() => {
+    if (!groupRef.current || !grab.current) return;
+
+    const p1 = getControllerPos(grab.current.controllerIndex);
+    if (!p1) return;
+
+    if (secondGrab.current && twoHandStart.current) {
+      const p2 = getControllerPos(secondGrab.current.controllerIndex);
+      if (p2) {
+        const ts = twoHandStart.current;
+
+        // Scale: ratio of current distance to start distance
+        const currentDist = p1.distanceTo(p2);
+        if (ts.dist > 0.01) {
+          const scaleFactor = currentDist / ts.dist;
+          const newScale = Math.max(0.05, Math.min(20, ts.scale * scaleFactor));
+          groupRef.current.scale.setScalar(newScale);
+        }
+
+        // Move: follow midpoint delta
+        const currentMid = p1.clone().add(p2).multiplyScalar(0.5);
+        const midDelta = currentMid.clone().sub(ts.midpoint);
+        groupRef.current.position.copy(ts.objectPos).add(midDelta);
+      }
+    } else {
+      // Single hand: object = controllerPos + offset
+      groupRef.current.position.copy(p1).add(grab.current.offset);
+    }
+
+    // Hover/grab highlight
+    const isActive = hovered || grab.current !== null;
     groupRef.current.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
         if (mat.emissive) {
-          mat.emissive.setHex(hovered || grabState.current ? 0x222244 : 0x000000);
+          mat.emissive.setHex(isActive ? 0x222244 : 0x000000);
         }
       }
     });
@@ -202,7 +236,6 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
       ref={groupRef}
       position={[0, 1.2, -1.5]}
       onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerOver={() => setHovered(true)}
       onPointerOut={() => setHovered(false)}
