@@ -240,11 +240,9 @@ function LiveMeshPreview({ onVertexCount }: { onVertexCount?: (count: number) =>
         }
         geometry.computeVertexNormals();
 
-        const material = new THREE.MeshBasicMaterial({
-          wireframe: true,
-          color: 0x44ff88,
+        const material = new THREE.MeshNormalMaterial({
           transparent: true,
-          opacity: 0.3,
+          opacity: 0.5,
           side: THREE.DoubleSide,
         });
 
