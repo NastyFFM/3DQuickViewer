@@ -1,6 +1,6 @@
 import { io, type Socket } from 'socket.io-client';
 import type { PeerMessage, ModelMeta, ModelChunk, StoredModel } from '../types';
-import { getModel, getAllModels, saveModel, generateId } from './storage';
+import { getModel, getAllModels, saveModel } from './storage';
 
 const SIGNALING_SERVER = 'https://web-production-84380f.up.railway.app';
 const CHUNK_SIZE = 64 * 1024; // 64KB chunks
@@ -85,7 +85,7 @@ export class RoomPeer {
       });
 
       // WebRTC signaling
-      this.socket.on('offer', async ({ offer, senderId, roomId }: { offer: RTCSessionDescriptionInit; senderId: string; roomId: string }) => {
+      this.socket.on('offer', async ({ offer, senderId }: { offer: RTCSessionDescriptionInit; senderId: string; roomId: string }) => {
         console.log('[3DQV] Received offer from:', senderId);
         const wrapper = await this.createPeerConnection(senderId, false);
         await wrapper.pc.setRemoteDescription(offer);

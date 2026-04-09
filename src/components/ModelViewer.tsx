@@ -1,5 +1,5 @@
-import { useRef, useEffect, useState } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { useEffect, useState } from 'react';
+import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Environment, ContactShadows, Html } from '@react-three/drei';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
@@ -15,7 +15,6 @@ interface ModelViewerProps {
 
 function LoadedModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: string }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
-  const { scene } = useThree();
 
   useEffect(() => {
     const ext = fileName.toLowerCase().split('.').pop();

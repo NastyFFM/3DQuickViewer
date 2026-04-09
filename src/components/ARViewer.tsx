@@ -1,30 +1,6 @@
 import { useEffect, useState } from 'react';
 import '@google/model-viewer';
 
-// Type declaration for model-viewer custom element
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      'model-viewer': React.DetailedHTMLProps<
-        React.HTMLAttributes<HTMLElement> & {
-          src?: string;
-          alt?: string;
-          ar?: boolean;
-          'ar-modes'?: string;
-          'camera-controls'?: boolean;
-          'touch-action'?: string;
-          'auto-rotate'?: boolean;
-          'shadow-intensity'?: string;
-          'environment-image'?: string;
-          exposure?: string;
-          poster?: string;
-        },
-        HTMLElement
-      >;
-    }
-  }
-}
-
 interface ARViewerProps {
   modelData: ArrayBuffer;
   fileName: string;

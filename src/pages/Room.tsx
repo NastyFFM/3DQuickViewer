@@ -270,13 +270,3 @@ const tabActiveStyle: React.CSSProperties = {
   color: '#fff',
 };
 
-const vrBtnStyle: React.CSSProperties = {
-  padding: '10px 20px',
-  background: '#6c63ff',
-  color: '#fff',
-  border: 'none',
-  borderRadius: 10,
-  fontSize: 15,
-  fontWeight: 700,
-  cursor: 'pointer',
-};
