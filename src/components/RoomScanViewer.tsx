@@ -1,146 +1,68 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import { useEffect, useState } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import * as THREE from 'three';
 
-// Request depth-sensing feature + configure for CPU access
 const store = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
-  depthSensing: true, // required: 'required' would fail if unsupported
-  customSessionInit: {
-    requiredFeatures: ['local-floor'],
-    optionalFeatures: ['depth-sensing', 'hand-tracking'],
-    depthSensing: {
-      usagePreference: ['cpu-optimized'],
-      dataFormatPreference: ['luminance-alpha'],
-    },
-  } as any,
 });
 
 /**
- * Reads the XR depth sensing API each frame and renders a live point cloud
- * from the real-time depth buffer — NOT from cached mesh data.
+ * On each pinch, place a red sphere at the hand/controller position.
+ * This is the proven working pattern.
  */
-function LiveDepthPointCloud({ onInfo }: { onInfo: (info: string) => void }) {
-  const { gl } = useThree();
-  const groupRef = useRef(new THREE.Group());
-  const pointsRef = useRef<THREE.Points | null>(null);
-  const frameCount = useRef(0);
+function ClickToPlace({ onPoint }: { onPoint: (pos: THREE.Vector3) => void }) {
+  const { gl, scene } = useThree();
 
-  useFrame(() => {
+  useEffect(() => {
     const renderer = gl as THREE.WebGLRenderer;
-    const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
-    const refSpace = renderer.xr.getReferenceSpace();
-    if (!frame || !refSpace) return;
 
-    frameCount.current++;
-    // Update every 10 frames to save performance
-    if (frameCount.current % 10 !== 0) return;
-
-    const pose = frame.getViewerPose(refSpace);
-    if (!pose) {
-      onInfo('Kein Viewer Pose');
-      return;
+    function onSelectStart(this: THREE.XRTargetRaySpace) {
+      const controller = this;
+      const pos = new THREE.Vector3();
+      controller.getWorldPosition(pos);
+      console.log('[Scan] SELECT at', pos.x.toFixed(2), pos.y.toFixed(2), pos.z.toFixed(2));
+      onPoint(pos.clone());
     }
 
-    // Remove old points
-    if (pointsRef.current) {
-      groupRef.current.remove(pointsRef.current);
-      pointsRef.current.geometry.dispose();
-      (pointsRef.current.material as THREE.Material).dispose();
-      pointsRef.current = null;
-    }
+    const c0 = renderer.xr.getController(0);
+    const c1 = renderer.xr.getController(1);
 
-    const positions: number[] = [];
-    const colors: number[] = [];
-    let hasDepth = false;
+    c0.addEventListener('selectstart', onSelectStart);
+    c1.addEventListener('selectstart', onSelectStart);
 
-    for (const view of pose.views) {
-      // Try to get depth information for this view
-      const depthInfo = (frame as any).getDepthInformation?.(view);
-      if (!depthInfo) continue;
-      hasDepth = true;
+    scene.add(c0);
+    scene.add(c1);
 
-      const w: number = depthInfo.width;
-      const h: number = depthInfo.height;
+    return () => {
+      c0.removeEventListener('selectstart', onSelectStart);
+      c1.removeEventListener('selectstart', onSelectStart);
+      scene.remove(c0);
+      scene.remove(c1);
+    };
+  }, [gl, scene, onPoint]);
 
-      // Build inverse view-projection to unproject depth pixels
-      const viewMatrix = new THREE.Matrix4().fromArray(view.transform.inverse.matrix);
-      const projMatrix = new THREE.Matrix4().fromArray(view.projectionMatrix);
-      const invProjView = new THREE.Matrix4()
-        .multiplyMatrices(projMatrix, viewMatrix)
-        .invert();
+  return null;
+}
 
-      // Sample every Nth pixel for performance
-      const step = Math.max(1, Math.floor(Math.min(w, h) / 80));
-
-      for (let y = 0; y < h; y += step) {
-        for (let x = 0; x < w; x += step) {
-          // getDepthInMeters takes normalized (0..1) coords
-          const u = x / w;
-          const v = y / h;
-          const depth = depthInfo.getDepthInMeters(u, v);
-
-          if (depth <= 0.1 || depth > 8 || !isFinite(depth)) continue;
-
-          // Unproject: NDC → world
-          const ndcX = u * 2 - 1;
-          const ndcY = 1 - v * 2;
-
-          // Point at depth plane in NDC, then unproject
-          const near = new THREE.Vector3(ndcX, ndcY, -1).applyMatrix4(invProjView);
-          const far = new THREE.Vector3(ndcX, ndcY, 1).applyMatrix4(invProjView);
-          const dir = far.sub(near).normalize();
-
-          // view position
-          const vp = view.transform.position;
-          const origin = new THREE.Vector3(vp.x, vp.y, vp.z);
-          const world = origin.add(dir.multiplyScalar(depth));
-
-          positions.push(world.x, world.y, world.z);
-
-          // Color by depth: close = red, far = blue
-          const t = Math.min(depth / 5, 1);
-          colors.push(1 - t, 0.5, t);
-        }
-      }
-    }
-
-    if (!hasDepth) {
-      onInfo('Depth API nicht verfuegbar — Quest muss Depth Sensing unterstuetzen');
-      return;
-    }
-
-    if (positions.length === 0) {
-      onInfo('Keine Tiefendaten im aktuellen Frame');
-      return;
-    }
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-    const mat = new THREE.PointsMaterial({
-      size: 0.012,
-      vertexColors: true,
-      sizeAttenuation: true,
-    });
-
-    const pts = new THREE.Points(geo, mat);
-    pointsRef.current = pts;
-    groupRef.current.add(pts);
-
-    onInfo(`Live Depth: ${positions.length / 3} Punkte`);
-  });
-
-  return <primitive object={groupRef.current} />;
+function DebugPoints({ points }: { points: THREE.Vector3[] }) {
+  return (
+    <>
+      {points.map((p, i) => (
+        <mesh key={i} position={[p.x, p.y, p.z]}>
+          <sphereGeometry args={[0.03, 8, 8]} />
+          <meshBasicMaterial color="#ff4444" />
+        </mesh>
+      ))}
+    </>
+  );
 }
 
 export function RoomScanViewer() {
   const [xrSupported, setXrSupported] = useState(false);
   const [active, setActive] = useState(false);
-  const [info, setInfo] = useState('');
+  const [points, setPoints] = useState<THREE.Vector3[]>([]);
 
   useEffect(() => {
     if (navigator.xr) {
@@ -148,13 +70,9 @@ export function RoomScanViewer() {
     }
   }, []);
 
-  const infoRef = useRef('');
-  const handleInfo = useCallback((text: string) => {
-    if (text !== infoRef.current) {
-      infoRef.current = text;
-      setInfo(text);
-    }
-  }, []);
+  const handlePoint = (pos: THREE.Vector3) => {
+    setPoints((prev) => [...prev, pos]);
+  };
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#1a1a2e' }}>
@@ -165,15 +83,7 @@ export function RoomScanViewer() {
         }}>
           {xrSupported ? (
             <button
-              onClick={async () => {
-                try {
-                  await store.enterAR();
-                  setActive(true);
-                } catch (err) {
-                  console.error('[Scan] enterAR failed:', err);
-                  setInfo('AR start fehlgeschlagen: ' + (err as Error).message);
-                }
-              }}
+              onClick={() => { store.enterAR(); setActive(true); }}
               style={{
                 background: '#6c63ff', color: '#fff', border: 'none',
                 borderRadius: 16, padding: '18px 36px', fontSize: 20,
@@ -181,17 +91,12 @@ export function RoomScanViewer() {
                 boxShadow: '0 4px 24px rgba(108,99,255,0.4)',
               }}
             >
-              📷 Depth Scan starten
+              📷 Room Scan starten
             </button>
           ) : (
             <div style={{ color: '#888' }}>
               <div style={{ fontSize: 48, marginBottom: 16 }}>📷</div>
               WebXR AR benoetigt (Quest Browser)
-            </div>
-          )}
-          {info && (
-            <div style={{ color: '#ff6644', fontSize: 13, marginTop: 16, maxWidth: 300 }}>
-              {info}
             </div>
           )}
         </div>
@@ -201,11 +106,27 @@ export function RoomScanViewer() {
         <div style={{
           position: 'absolute', bottom: 20, left: '50%',
           transform: 'translateX(-50%)', zIndex: 10,
-          background: 'rgba(0,0,0,0.7)', color: '#fff',
-          borderRadius: 8, padding: '8px 16px', fontSize: 14,
-          fontFamily: 'monospace', pointerEvents: 'none',
+          display: 'flex', gap: 8, alignItems: 'center',
         }}>
-          {info || 'Starte Depth Sensing...'}
+          <div style={{
+            background: 'rgba(0,0,0,0.7)', color: '#fff',
+            borderRadius: 8, padding: '8px 16px', fontSize: 14,
+            fontFamily: 'monospace',
+          }}>
+            {points.length} Punkte — Pinch = Punkt
+          </div>
+          {points.length > 0 && (
+            <button
+              onClick={() => setPoints([])}
+              style={{
+                background: '#d32f2f', color: '#fff', border: 'none',
+                borderRadius: 8, padding: '8px 14px', fontSize: 13,
+                fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              Reset
+            </button>
+          )}
         </div>
       )}
 
@@ -213,7 +134,8 @@ export function RoomScanViewer() {
         <XR store={store}>
           <ambientLight intensity={1} />
           <XROrigin />
-          <LiveDepthPointCloud onInfo={handleInfo} />
+          <ClickToPlace onPoint={handlePoint} />
+          <DebugPoints points={points} />
         </XR>
       </Canvas>
     </div>
