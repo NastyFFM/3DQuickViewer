@@ -11,12 +11,11 @@ const store = createXRStore({
   customSessionInit: {
     requiredFeatures: ['local-floor'],
     optionalFeatures: ['depth-sensing', 'hand-tracking'],
-    // @ts-expect-error - depth-sensing init options
     depthSensing: {
       usagePreference: ['cpu-optimized'],
       dataFormatPreference: ['luminance-alpha'],
     },
-  } as XRSessionInit,
+  } as any,
 });
 
 /**
