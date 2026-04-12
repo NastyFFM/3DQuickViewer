@@ -181,7 +181,7 @@ function ScanPoints({ points, pointSize }: { points: ColoredPoint[]; pointSize: 
  * Floating 3D button in XR space — tap to switch AR/VR.
  * Follows the user's gaze, positioned bottom-left.
  */
-function XRModeButton({ label, color, onPress }: { label: string; color: string; onPress: () => void }) {
+function XRModeButton({ color, onPress }: { label?: string; color: string; onPress: () => void }) {
   const groupRef = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState(false);
   const { camera } = useThree();
