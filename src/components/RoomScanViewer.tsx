@@ -121,38 +121,10 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
       previewPointsRef.current = null;
     }
 
+    // Live preview: ALWAYS use fast height-coloring (no GPU readback)
     const positions: number[] = [];
     const colors: number[] = [];
     const currentPoints: ColoredPoint[] = [];
-
-    // Try to get camera texture for color sampling
-    // Correct API: binding.getCameraImage(view.camera) — takes XRCamera, not XRView
-    let camTex: WebGLTexture | null = null;
-    let camW = 0, camH = 0;
-    const glCtx = (gl as THREE.WebGLRenderer).getContext();
-    const viewerPose = frame.getViewerPose(refSpace);
-
-    if (useColor && hasCameraRef.current && glBindingRef.current && viewerPose?.views?.length) {
-      try {
-        const view = viewerPose.views[0];
-        const xrCamera = (view as any).camera; // XRCamera object
-        if (xrCamera) {
-          camTex = glBindingRef.current.getCameraImage(xrCamera);
-          if (camTex) {
-            camW = xrCamera.width || 1280;
-            camH = xrCamera.height || 960;
-            glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, cameraFbRef.current);
-            glCtx.framebufferTexture2D(glCtx.FRAMEBUFFER, glCtx.COLOR_ATTACHMENT0, glCtx.TEXTURE_2D, camTex, 0);
-          }
-        }
-      } catch {
-        camTex = null;
-      }
-    }
-
-    const pixel = new Uint8Array(4);
-    let srcIdx = 0;
-    let colorHits = 0;
 
     for (const source of hitSourcesRef.current) {
       const results = frame.getHitTestResults(source);
@@ -160,36 +132,13 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
         const pose = results[0].getPose(refSpace);
         if (pose) {
           const p = pose.transform.position;
-          let r: number, g: number, b: number;
-
-          if (camTex && camW > 0) {
-            // Sample camera pixel at grid UV
-            const gx = srcIdx % gridSize;
-            const gy = Math.floor(srcIdx / gridSize);
-            const u = gx / (gridSize - 1);
-            const v = 1 - (gy / (gridSize - 1));
-            try {
-              glCtx.readPixels(Math.floor(u * (camW - 1)), Math.floor(v * (camH - 1)), 1, 1, glCtx.RGBA, glCtx.UNSIGNED_BYTE, pixel);
-              r = pixel[0] / 255; g = pixel[1] / 255; b = pixel[2] / 255;
-              colorHits++;
-            } catch {
-              const t = Math.min(Math.max((p.y + 0.5) / 3, 0), 1);
-              r = 0.3 + t * 0.7; g = 0.8 - t * 0.3; b = 0.5;
-            }
-          } else {
-            const t = Math.min(Math.max((p.y + 0.5) / 3, 0), 1);
-            r = 0.3 + t * 0.7; g = 0.8 - t * 0.3; b = 0.5;
-          }
-
+          const t = Math.min(Math.max((p.y + 0.5) / 3, 0), 1);
           positions.push(p.x, p.y, p.z);
-          colors.push(r, g, b);
-          currentPoints.push({ x: p.x, y: p.y, z: p.z, r, g, b });
+          colors.push(0.3 + t * 0.7, 0.8 - t * 0.3, 0.5);
+          currentPoints.push({ x: p.x, y: p.y, z: p.z, r: 0.3 + t * 0.7, g: 0.8 - t * 0.3, b: 0.5 });
         }
       }
-      srcIdx++;
     }
-
-    if (camTex) glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, null);
     livePointsRef.current = currentPoints;
 
     if (positions.length > 0) {
@@ -201,15 +150,61 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
       }));
       previewGroupRef.current.add(previewPointsRef.current);
     }
-
-    const colorInfo = useColor ? (colorHits > 0 ? ` 🎨${colorHits}` : ' (no cam)') : '';
-    onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits${colorInfo}`);
+    onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits`);
   });
 
   useEffect(() => {
     const renderer = gl as THREE.WebGLRenderer;
     const onSelectStart = () => {
-      if (livePointsRef.current.length > 0) onSnapshot([...livePointsRef.current]);
+      if (livePointsRef.current.length === 0) return;
+
+      let snapshotPoints = [...livePointsRef.current];
+
+      // If color mode, try to sample camera colors NOW (once, at snapshot time)
+      if (useColor && hasCameraRef.current && glBindingRef.current) {
+        try {
+          const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
+          const refSpace = renderer.xr.getReferenceSpace();
+          if (frame && refSpace) {
+            const viewerPose = frame.getViewerPose(refSpace);
+            if (viewerPose?.views?.length) {
+              const view = viewerPose.views[0];
+              const xrCamera = (view as any).camera;
+              if (xrCamera) {
+                const camTex = glBindingRef.current.getCameraImage(xrCamera);
+                if (camTex) {
+                  const glCtx = renderer.getContext();
+                  const camW = xrCamera.width || 1280;
+                  const camH = xrCamera.height || 960;
+                  glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, cameraFbRef.current);
+                  glCtx.framebufferTexture2D(glCtx.FRAMEBUFFER, glCtx.COLOR_ATTACHMENT0, glCtx.TEXTURE_2D, camTex, 0);
+
+                  const pixel = new Uint8Array(4);
+                  snapshotPoints = snapshotPoints.map((pt, idx) => {
+                    const gx = idx % gridSize;
+                    const gy = Math.floor(idx / gridSize);
+                    const u = gx / (gridSize - 1);
+                    const v = 1 - (gy / (gridSize - 1));
+                    try {
+                      glCtx.readPixels(Math.floor(u * (camW - 1)), Math.floor(v * (camH - 1)), 1, 1, glCtx.RGBA, glCtx.UNSIGNED_BYTE, pixel);
+                      return { ...pt, r: pixel[0] / 255, g: pixel[1] / 255, b: pixel[2] / 255 };
+                    } catch {
+                      return pt;
+                    }
+                  });
+
+                  glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, null);
+                  console.log('[Scan] Color snapshot: sampled camera RGB');
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.log('[Scan] Camera color sampling failed:', err);
+        }
+      }
+
+      onSnapshot(snapshotPoints);
     };
     const c0 = renderer.xr.getController(0);
     const c1 = renderer.xr.getController(1);
