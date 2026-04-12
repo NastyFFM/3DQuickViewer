@@ -16,8 +16,8 @@ const storeWithCamera = createXRStore({
   controller: { rayPointer: true },
   hitTest: 'required',
   customSessionInit: {
-    requiredFeatures: ['local-floor', 'hit-test', 'hand-tracking'],
-    optionalFeatures: ['camera-access', 'anchors', 'layers'],
+    requiredFeatures: ['camera-access', 'local-floor', 'hit-test', 'hand-tracking'],
+    optionalFeatures: ['anchors', 'layers'],
   } as any,
 });
 
@@ -42,10 +42,6 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
   const previewPointsRef = useRef<THREE.Points | null>(null);
   const sourcesCreated = useRef(false);
   const lastGridSize = useRef(0);
-  // Camera color
-  const glBindingRef = useRef<any>(null);
-  const cameraFbRef = useRef<WebGLFramebuffer | null>(null);
-  const hasCameraRef = useRef(false);
 
   useEffect(() => {
     scene.add(previewGroupRef.current);
@@ -77,23 +73,6 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
         }
         sourcesCreated.current = true;
         lastGridSize.current = gridSize;
-
-        // Try camera access binding
-        if (useColor && !glBindingRef.current) {
-          try {
-            const glCtx = renderer.getContext();
-            const Binding = (window as any).XRWebGLBinding;
-            if (Binding) {
-              glBindingRef.current = new Binding(session, glCtx);
-              cameraFbRef.current = glCtx.createFramebuffer();
-              hasCameraRef.current = true;
-              console.log('[Scan] Camera binding created');
-            }
-          } catch (e) {
-            console.log('[Scan] No camera access:', e);
-            hasCameraRef.current = false;
-          }
-        }
       } catch (err) {
         onLiveInfo('Hit-Test Error: ' + (err as Error).message);
       }
@@ -160,8 +139,8 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
 
       let snapshotPoints = [...livePointsRef.current];
 
-      // If color mode, try to sample camera colors NOW (once, at snapshot time)
-      if (useColor && hasCameraRef.current && glBindingRef.current) {
+      // If color mode, use Three.js renderer.xr.getCameraTexture()
+      if (useColor) {
         try {
           const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
           const refSpace = renderer.xr.getReferenceSpace();
@@ -171,36 +150,53 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
               const view = viewerPose.views[0];
               const xrCamera = (view as any).camera;
               if (xrCamera) {
-                const camTex = glBindingRef.current.getCameraImage(xrCamera);
-                if (camTex) {
-                  const glCtx = renderer.getContext();
-                  const camW = xrCamera.width || 1280;
-                  const camH = xrCamera.height || 960;
-                  glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, cameraFbRef.current);
-                  glCtx.framebufferTexture2D(glCtx.FRAMEBUFFER, glCtx.COLOR_ATTACHMENT0, glCtx.TEXTURE_2D, camTex, 0);
+                // Three.js built-in: returns a THREE.Texture
+                const camTexture = (renderer.xr as any).getCameraTexture?.(xrCamera);
+                if (camTexture) {
+                  const camW: number = xrCamera.width || 1280;
+                  const camH: number = xrCamera.height || 960;
 
-                  const pixel = new Uint8Array(4);
+                  // Render camera texture to a render target so we can readPixels
+                  const rt = new THREE.WebGLRenderTarget(camW, camH);
+                  const readBuf = new Uint8Array(4);
+
+                  // Copy camera texture into the render target via a fullscreen quad
+                  const prevRT = renderer.getRenderTarget();
+                  const copyScene = new THREE.Scene();
+                  const copyCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+                  const quad = new THREE.Mesh(
+                    new THREE.PlaneGeometry(2, 2),
+                    new THREE.MeshBasicMaterial({ map: camTexture })
+                  );
+                  copyScene.add(quad);
+                  renderer.setRenderTarget(rt);
+                  renderer.render(copyScene, copyCamera);
+
                   snapshotPoints = snapshotPoints.map((pt, idx) => {
                     const gx = idx % gridSize;
                     const gy = Math.floor(idx / gridSize);
-                    const u = gx / (gridSize - 1);
-                    const v = 1 - (gy / (gridSize - 1));
-                    try {
-                      glCtx.readPixels(Math.floor(u * (camW - 1)), Math.floor(v * (camH - 1)), 1, 1, glCtx.RGBA, glCtx.UNSIGNED_BYTE, pixel);
-                      return { ...pt, r: pixel[0] / 255, g: pixel[1] / 255, b: pixel[2] / 255 };
-                    } catch {
-                      return pt;
-                    }
+                    const px = Math.floor((gx / (gridSize - 1)) * (camW - 1));
+                    const py = Math.floor((gy / (gridSize - 1)) * (camH - 1));
+                    renderer.readRenderTargetPixels(rt, px, py, 1, 1, readBuf);
+                    return { ...pt, r: readBuf[0] / 255, g: readBuf[1] / 255, b: readBuf[2] / 255 };
                   });
 
-                  glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, null);
-                  console.log('[Scan] Color snapshot: sampled camera RGB');
+                  renderer.setRenderTarget(prevRT);
+                  rt.dispose();
+                  quad.geometry.dispose();
+                  (quad.material as THREE.Material).dispose();
+
+                  console.log(`[Scan] Camera RGB: ${snapshotPoints.length} pixels from ${camW}x${camH}`);
+                } else {
+                  console.log('[Scan] getCameraTexture returned null');
                 }
+              } else {
+                console.log('[Scan] view.camera is null — camera-access not granted?');
               }
             }
           }
         } catch (err) {
-          console.log('[Scan] Camera color sampling failed:', err);
+          console.log('[Scan] Camera color failed:', err);
         }
       }
 
