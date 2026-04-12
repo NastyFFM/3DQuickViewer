@@ -7,6 +7,9 @@ const store = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
   hitTest: true,
+  customSessionInit: {
+    optionalFeatures: ['camera-access'],
+  } as any,
 });
 
 interface ColoredPoint {
@@ -31,6 +34,10 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
   const previewPointsRef = useRef<THREE.Points | null>(null);
   const sourcesCreated = useRef(false);
   const lastGridSize = useRef(0);
+  // Camera color sampling
+  const glBindingRef = useRef<any>(null);
+  const cameraFbRef = useRef<WebGLFramebuffer | null>(null);
+  const hasCameraAccess = useRef(false);
 
   // Add preview group to scene
   useEffect(() => {
@@ -82,6 +89,21 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
         sourcesCreated.current = true;
         lastGridSize.current = gridSize;
         console.log(`[Scan] Created ${hitSourcesRef.current.length} hit-test sources (${gridSize}x${gridSize})`);
+
+        // Try to create XRWebGLBinding for camera access
+        try {
+          const glCtx = renderer.getContext();
+          const XRWebGLBindingClass = (window as any).XRWebGLBinding;
+          if (XRWebGLBindingClass) {
+            glBindingRef.current = new XRWebGLBindingClass(session, glCtx);
+            cameraFbRef.current = glCtx.createFramebuffer();
+            hasCameraAccess.current = true;
+            console.log('[Scan] Camera access available via XRWebGLBinding');
+          }
+        } catch (camErr) {
+          console.log('[Scan] No camera access:', camErr);
+          hasCameraAccess.current = false;
+        }
       } catch (err) {
         console.error('[Scan] Failed to create hit-test sources:', err);
         onLiveInfo('Hit-Test nicht verfuegbar: ' + (err as Error).message);
@@ -124,26 +146,79 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
     const colors: number[] = [];
     const currentPoints: ColoredPoint[] = [];
 
+    // Try to get camera texture for color sampling
+    let cameraTexture: WebGLTexture | null = null;
+    let camWidth = 0;
+    let camHeight = 0;
+    const glCtx = (gl as THREE.WebGLRenderer).getContext();
+    const viewerPose = frame.getViewerPose(refSpace);
+
+    if (hasCameraAccess.current && glBindingRef.current && viewerPose && viewerPose.views.length > 0) {
+      try {
+        cameraTexture = glBindingRef.current.getCameraImage(viewerPose.views[0]);
+        if (cameraTexture) {
+          // Bind to framebuffer to read pixels
+          glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, cameraFbRef.current);
+          glCtx.framebufferTexture2D(
+            glCtx.FRAMEBUFFER, glCtx.COLOR_ATTACHMENT0,
+            glCtx.TEXTURE_2D, cameraTexture, 0
+          );
+          // Try to get texture dimensions
+          camWidth = 1280; // Quest camera default
+          camHeight = 960;
+        }
+      } catch {
+        cameraTexture = null;
+      }
+    }
+
+    const pixel = new Uint8Array(4);
+    let srcIdx = 0;
+
     for (const source of hitSourcesRef.current) {
       const results = frame.getHitTestResults(source);
       if (results.length > 0) {
         const pose = results[0].getPose(refSpace);
         if (pose) {
           const p = pose.transform.position;
+          let r: number, g: number, b: number;
 
-          // Color by height
-          const h = p.y;
-          const t = Math.min(Math.max((h + 0.5) / 3, 0), 1);
+          if (cameraTexture && camWidth > 0) {
+            // Sample camera color at the grid UV position
+            const gridX = srcIdx % gridSize;
+            const gridY = Math.floor(srcIdx / gridSize);
+            const u = gridX / (gridSize - 1);
+            const v = 1 - (gridY / (gridSize - 1)); // flip Y
+            const px = Math.floor(u * (camWidth - 1));
+            const py = Math.floor(v * (camHeight - 1));
+
+            try {
+              glCtx.readPixels(px, py, 1, 1, glCtx.RGBA, glCtx.UNSIGNED_BYTE, pixel);
+              r = pixel[0] / 255;
+              g = pixel[1] / 255;
+              b = pixel[2] / 255;
+            } catch {
+              // Fallback to height color
+              const t = Math.min(Math.max((p.y + 0.5) / 3, 0), 1);
+              r = 0.3 + t * 0.7; g = 0.8 - t * 0.3; b = 0.5;
+            }
+          } else {
+            // Fallback: color by height
+            const t = Math.min(Math.max((p.y + 0.5) / 3, 0), 1);
+            r = 0.3 + t * 0.7; g = 0.8 - t * 0.3; b = 0.5;
+          }
 
           positions.push(p.x, p.y, p.z);
-          colors.push(0.3 + t * 0.7, 0.8 - t * 0.3, 0.5);
-
-          currentPoints.push({
-            x: p.x, y: p.y, z: p.z,
-            r: 0.3 + t * 0.7, g: 0.8 - t * 0.3, b: 0.5,
-          });
+          colors.push(r, g, b);
+          currentPoints.push({ x: p.x, y: p.y, z: p.z, r, g, b });
         }
       }
+      srcIdx++;
+    }
+
+    // Unbind camera framebuffer
+    if (cameraTexture) {
+      glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, null);
     }
 
     livePointsRef.current = currentPoints;
