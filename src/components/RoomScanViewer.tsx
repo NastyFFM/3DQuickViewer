@@ -4,19 +4,11 @@ import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { Environment } from '@react-three/drei';
 import * as THREE from 'three';
 
-// Two stores: AR for scanning, VR for viewing
-const arStore = createXRStore({
+const store = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
   hitTest: 'required',
 });
-
-const vrStore = createXRStore({
-  hand: { touchPointer: true, rayPointer: true },
-  controller: { rayPointer: true },
-});
-
-type ViewMode = 'setup' | 'ar' | 'vr';
 
 interface ColoredPoint {
   x: number; y: number; z: number;
@@ -24,7 +16,7 @@ interface ColoredPoint {
 }
 
 /**
- * NxN hit-test grid for AR scanning
+ * NxN hit-test grid for scanning
  */
 function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
   gridSize: number;
@@ -147,9 +139,6 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
   return null;
 }
 
-/**
- * Renders points as WebGL Points
- */
 function ScanPoints({ points, pointSize }: { points: ColoredPoint[]; pointSize: number }) {
   const ref = useRef<THREE.Points>(null);
   useEffect(() => {
@@ -167,7 +156,6 @@ function ScanPoints({ points, pointSize }: { points: ColoredPoint[]; pointSize: 
     ref.current.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     ref.current.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   }, [points]);
-
   if (points.length === 0) return null;
   return (
     <points ref={ref}>
@@ -178,28 +166,77 @@ function ScanPoints({ points, pointSize }: { points: ColoredPoint[]; pointSize: 
 }
 
 /**
- * Floating 3D button in XR space — tap to switch AR/VR.
- * Follows the user's gaze, positioned bottom-left.
+ * Virtual room that renders around the user inside the AR session.
+ * Floor, walls, ceiling — toggleable overlay, not a session switch.
  */
-function XRModeButton({ color, onPress }: { label?: string; color: string; onPress: () => void }) {
+function VirtualRoom() {
+  const roomSize = 10;
+  const wallHeight = 3;
+  const wallMat = (
+    <meshStandardMaterial color="#2a2a3e" transparent opacity={0.85} side={THREE.DoubleSide} />
+  );
+
+  return (
+    <group>
+      {/* Floor */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+        <planeGeometry args={[roomSize, roomSize]} />
+        <meshStandardMaterial color="#1a1a2e" transparent opacity={0.9} side={THREE.DoubleSide} />
+      </mesh>
+      {/* Grid */}
+      <gridHelper args={[roomSize, roomSize, '#444', '#333']} position={[0, 0.01, 0]} />
+      {/* Ceiling */}
+      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, wallHeight, 0]}>
+        <planeGeometry args={[roomSize, roomSize]} />
+        <meshStandardMaterial color="#151525" transparent opacity={0.8} side={THREE.DoubleSide} />
+      </mesh>
+      {/* Front wall */}
+      <mesh position={[0, wallHeight / 2, -roomSize / 2]}>
+        <planeGeometry args={[roomSize, wallHeight]} />
+        {wallMat}
+      </mesh>
+      {/* Back wall */}
+      <mesh position={[0, wallHeight / 2, roomSize / 2]} rotation={[0, Math.PI, 0]}>
+        <planeGeometry args={[roomSize, wallHeight]} />
+        {wallMat}
+      </mesh>
+      {/* Left wall */}
+      <mesh position={[-roomSize / 2, wallHeight / 2, 0]} rotation={[0, Math.PI / 2, 0]}>
+        <planeGeometry args={[roomSize, wallHeight]} />
+        {wallMat}
+      </mesh>
+      {/* Right wall */}
+      <mesh position={[roomSize / 2, wallHeight / 2, 0]} rotation={[0, -Math.PI / 2, 0]}>
+        <planeGeometry args={[roomSize, wallHeight]} />
+        {wallMat}
+      </mesh>
+      {/* Environment lighting for the VR room */}
+      <Environment preset="city" />
+    </group>
+  );
+}
+
+/**
+ * Floating 3D toggle button in XR space.
+ */
+function XRToggleButton({ active, onPress }: { active: boolean; onPress: () => void }) {
   const groupRef = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState(false);
   const { camera } = useThree();
 
-  // Position the button relative to camera each frame
   useFrame(() => {
     if (!groupRef.current) return;
-    // Place it in front of the camera, bottom-left
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
     groupRef.current.position.copy(camera.position)
-      .add(dir.multiplyScalar(1.2))
-      .add(right.multiplyScalar(-0.35))
-      .add(up.multiplyScalar(-0.25));
+      .add(dir.multiplyScalar(1.0))
+      .add(right.multiplyScalar(-0.3))
+      .add(up.multiplyScalar(-0.2));
     groupRef.current.quaternion.copy(camera.quaternion);
   });
+
+  const color = active ? '#2d6a4f' : '#6c63ff';
 
   return (
     <group ref={groupRef}>
@@ -208,47 +245,26 @@ function XRModeButton({ color, onPress }: { label?: string; color: string; onPre
         onPointerOver={() => setHovered(true)}
         onPointerOut={() => setHovered(false)}
       >
-        <boxGeometry args={[0.2, 0.08, 0.02]} />
+        <boxGeometry args={[0.18, 0.07, 0.015]} />
         <meshStandardMaterial
           color={hovered ? '#ffffff' : color}
           emissive={color}
-          emissiveIntensity={hovered ? 0.5 : 0.2}
+          emissiveIntensity={hovered ? 0.6 : 0.25}
         />
       </mesh>
-      {/* Label using a simple plane with canvas texture would be complex,
-          so we use a small sphere as indicator instead */}
-      <mesh position={[0, 0, 0.015]}>
-        <sphereGeometry args={[0.015, 8, 8]} />
-        <meshBasicMaterial color={hovered ? '#fff' : '#000'} />
+      {/* Indicator dot */}
+      <mesh position={[0, 0, 0.01]}>
+        <sphereGeometry args={[0.012, 8, 8]} />
+        <meshBasicMaterial color={active ? '#4caf50' : '#9c27b0'} />
       </mesh>
     </group>
   );
 }
 
-/**
- * VR environment for viewing scan data
- */
-function VRScanScene({ points, pointSize }: { points: ColoredPoint[]; pointSize: number }) {
-  return (
-    <>
-      <ambientLight intensity={0.6} />
-      <directionalLight position={[5, 5, 5]} intensity={1} />
-      <XROrigin />
-      <ScanPoints points={points} pointSize={pointSize} />
-      <gridHelper args={[20, 20, '#333', '#222']} position={[0, 0.01, 0]} />
-      <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <planeGeometry args={[20, 20]} />
-        <meshStandardMaterial color="#1a1a2e" transparent opacity={0.8} />
-      </mesh>
-      <Environment preset="city" />
-    </>
-  );
-}
-
 export function RoomScanViewer() {
   const [xrSupported, setXrSupported] = useState(false);
-  const [vrSupported, setVrSupported] = useState(false);
-  const [mode, setMode] = useState<ViewMode>('setup');
+  const [active, setActive] = useState(false);
+  const [showVRRoom, setShowVRRoom] = useState(false);
   const [gridSize, setGridSize] = useState(10);
   const [pointSize, setPointSize] = useState(4);
   const [points, setPoints] = useState<ColoredPoint[]>([]);
@@ -258,7 +274,6 @@ export function RoomScanViewer() {
   useEffect(() => {
     if (navigator.xr) {
       navigator.xr.isSessionSupported('immersive-ar').then(setXrSupported);
-      navigator.xr.isSessionSupported('immersive-vr').then(setVrSupported);
     }
   }, []);
 
@@ -290,59 +305,60 @@ export function RoomScanViewer() {
     document.body.removeChild(a); URL.revokeObjectURL(url);
   }, [points]);
 
-  const switchToAR = () => { setMode('ar'); arStore.enterAR(); };
-  const switchToVR = () => { setMode('vr'); vrStore.enterVR(); };
-
   const pxSize = pointSize * 0.003;
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#1a1a2e' }}>
-
       {/* Setup screen */}
-      {mode === 'setup' && (
+      {!active && (
         <div style={{
           position: 'absolute', top: '50%', left: '50%',
           transform: 'translate(-50%, -50%)', zIndex: 10, textAlign: 'center',
         }}>
-          <div style={{ color: '#fff', fontSize: 16, marginBottom: 12 }}>
-            Grid: {gridSize}x{gridSize} = {gridSize * gridSize} Rays
-          </div>
-          <input type="range" min={3} max={30} value={gridSize}
-            onChange={(e) => setGridSize(Number(e.target.value))}
-            style={{ width: 250, marginBottom: 16, accentColor: '#6c63ff' }} />
-          <div style={{ color: '#fff', fontSize: 16, marginBottom: 12 }}>
-            Punktgroesse: {pointSize}px
-          </div>
-          <input type="range" min={1} max={20} value={pointSize}
-            onChange={(e) => setPointSize(Number(e.target.value))}
-            style={{ width: 250, marginBottom: 24, accentColor: '#6c63ff' }} />
-          <br />
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
-            {xrSupported && (
-              <button onClick={switchToAR} style={btnMain('#6c63ff')}>
-                📷 AR Scan
+          {xrSupported ? (
+            <>
+              <div style={{ color: '#fff', fontSize: 16, marginBottom: 12 }}>
+                Grid: {gridSize}x{gridSize} = {gridSize * gridSize} Rays
+              </div>
+              <input type="range" min={3} max={30} value={gridSize}
+                onChange={(e) => setGridSize(Number(e.target.value))}
+                style={{ width: 250, marginBottom: 16, accentColor: '#6c63ff' }} />
+              <div style={{ color: '#fff', fontSize: 16, marginBottom: 12 }}>
+                Punktgroesse: {pointSize}px
+              </div>
+              <input type="range" min={1} max={20} value={pointSize}
+                onChange={(e) => setPointSize(Number(e.target.value))}
+                style={{ width: 250, marginBottom: 24, accentColor: '#6c63ff' }} />
+              <br />
+              <button
+                onClick={() => { store.enterAR(); setActive(true); }}
+                style={{
+                  background: '#6c63ff', color: '#fff', border: 'none',
+                  borderRadius: 16, padding: '18px 36px', fontSize: 20,
+                  fontWeight: 700, cursor: 'pointer',
+                  boxShadow: '0 4px 24px rgba(108,99,255,0.4)',
+                }}
+              >
+                📷 Room Scan starten
               </button>
-            )}
-            {vrSupported && points.length > 0 && (
-              <button onClick={switchToVR} style={btnMain('#2d6a4f')}>
-                🥽 VR Ansicht ({points.length.toLocaleString()} Pkt)
-              </button>
-            )}
-          </div>
+            </>
+          ) : (
+            <div style={{ color: '#888' }}>
+              <div style={{ fontSize: 48, marginBottom: 16 }}>📷</div>
+              WebXR AR benoetigt (Quest Browser)
+            </div>
+          )}
           {points.length > 0 && (
             <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'center' }}>
               <button onClick={handleExport} style={btnSmall('#2d6a4f')}>PLY Export</button>
               <button onClick={() => { setPoints([]); setSnaps(0); }} style={btnSmall('#d32f2f')}>Reset</button>
             </div>
           )}
-          {!xrSupported && !vrSupported && (
-            <div style={{ color: '#888', marginTop: 16 }}>WebXR benoetigt (Quest Browser)</div>
-          )}
         </div>
       )}
 
-      {/* HUD in AR/VR */}
-      {mode !== 'setup' && (
+      {/* HUD */}
+      {active && (
         <>
           <div style={{
             position: 'absolute', top: 16, left: '50%',
@@ -351,7 +367,7 @@ export function RoomScanViewer() {
             borderRadius: 8, padding: '8px 16px', fontSize: 14,
             pointerEvents: 'none',
           }}>
-            {mode === 'ar' ? `Pinch = Snapshot (${gridSize}x${gridSize})` : `VR Ansicht · ${points.length.toLocaleString()} Punkte`}
+            Pinch = Snapshot ({gridSize}x{gridSize}) {showVRRoom ? '· VR Raum AN' : ''}
           </div>
           <div style={{
             position: 'absolute', bottom: 20, left: '50%',
@@ -363,55 +379,42 @@ export function RoomScanViewer() {
               background: 'rgba(0,0,0,0.7)', color: '#fff',
               borderRadius: 8, padding: '8px 12px', fontSize: 13, fontFamily: 'monospace',
             }}>
-              {mode === 'ar' ? liveInfo + ' · ' : ''}{points.length.toLocaleString()} Pkt · {snaps} Snaps
+              {liveInfo} · {points.length.toLocaleString()} Pkt · {snaps} Snaps
             </div>
-            {mode === 'ar' && vrSupported && points.length > 0 && (
-              <button onClick={switchToVR} style={btnSmall('#2d6a4f')}>🥽 VR</button>
-            )}
-            {mode === 'vr' && xrSupported && (
-              <button onClick={switchToAR} style={btnSmall('#6c63ff')}>📷 AR</button>
+            {points.length > 0 && (
+              <button onClick={handleExport} style={btnSmall('#2d6a4f')}>PLY</button>
             )}
           </div>
         </>
       )}
 
-      {/* AR Canvas */}
-      {(mode === 'setup' || mode === 'ar') && (
-        <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 0], fov: 60 }}>
-          <XR store={arStore}>
-            <ambientLight intensity={1} />
-            <XROrigin />
-            {mode === 'ar' && <HitTestGrid gridSize={gridSize} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
-            <ScanPoints points={points} pointSize={pxSize} />
-            {mode === 'ar' && vrSupported && points.length > 0 && (
-              <XRModeButton label="VR" color="#2d6a4f" onPress={switchToVR} />
-            )}
-          </XR>
-        </Canvas>
-      )}
+      {/* Single AR Canvas — VR room is just a toggle overlay */}
+      <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 0], fov: 60 }}>
+        <XR store={store}>
+          <ambientLight intensity={showVRRoom ? 0.6 : 1} />
+          {showVRRoom && <directionalLight position={[5, 5, 5]} intensity={1} />}
+          <XROrigin />
 
-      {/* VR Canvas */}
-      {mode === 'vr' && (
-        <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 2], fov: 60 }}>
-          <XR store={vrStore}>
-            <VRScanScene points={points} pointSize={pxSize} />
-            {xrSupported && (
-              <XRModeButton label="AR" color="#6c63ff" onPress={switchToAR} />
-            )}
-          </XR>
-        </Canvas>
-      )}
+          {/* Hit-test scanning (always active in AR) */}
+          {active && <HitTestGrid gridSize={gridSize} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
+
+          {/* Accumulated points (always visible) */}
+          <ScanPoints points={points} pointSize={pxSize} />
+
+          {/* VR Room overlay — just toggled on/off, same session */}
+          {showVRRoom && <VirtualRoom />}
+
+          {/* Floating toggle button */}
+          {active && (
+            <XRToggleButton
+              active={showVRRoom}
+              onPress={() => setShowVRRoom((v) => !v)}
+            />
+          )}
+        </XR>
+      </Canvas>
     </div>
   );
-}
-
-function btnMain(bg: string): React.CSSProperties {
-  return {
-    background: bg, color: '#fff', border: 'none',
-    borderRadius: 16, padding: '18px 36px', fontSize: 20,
-    fontWeight: 700, cursor: 'pointer',
-    boxShadow: `0 4px 24px ${bg}66`,
-  };
 }
 
 function btnSmall(bg: string): React.CSSProperties {
