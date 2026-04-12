@@ -4,22 +4,11 @@ import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { Environment } from '@react-three/drei';
 import * as THREE from 'three';
 
-// Two stores: one without camera, one with (user picks via toggle)
-const storeNoCamera = createXRStore({
+// Single store — no customSessionInit (it overrides everything)
+const store = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
   hitTest: 'required',
-});
-
-// Camera store: camera-access as OPTIONAL so AR still starts if unsupported
-const storeWithCamera = createXRStore({
-  hand: { touchPointer: true, rayPointer: true },
-  controller: { rayPointer: true },
-  hitTest: 'required',
-  customSessionInit: {
-    requiredFeatures: ['local-floor', 'hit-test', 'hand-tracking'],
-    optionalFeatures: ['camera-access', 'anchors', 'layers'],
-  } as any,
 });
 
 interface ColoredPoint {
@@ -443,8 +432,7 @@ export function RoomScanViewer() {
               </div>
               <button
                 onClick={() => {
-                  const s = useColor ? storeWithCamera : storeNoCamera;
-                  s.enterAR();
+                  store.enterAR();
                   setActive(true);
                 }}
                 style={{
@@ -505,7 +493,7 @@ export function RoomScanViewer() {
 
       {/* Single AR Canvas — VR room is just a toggle overlay */}
       <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 0], fov: 60 }}>
-        <XR store={useColor ? storeWithCamera : storeNoCamera}>
+        <XR store={store}>
           <ambientLight intensity={showVRRoom ? 0.6 : 1} />
           {showVRRoom && <directionalLight position={[5, 5, 5]} intensity={1} />}
           <XROrigin />
