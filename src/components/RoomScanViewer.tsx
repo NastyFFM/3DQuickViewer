@@ -11,13 +11,14 @@ const storeNoCamera = createXRStore({
   hitTest: 'required',
 });
 
+// Camera store: camera-access as OPTIONAL so AR still starts if unsupported
 const storeWithCamera = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
   hitTest: 'required',
   customSessionInit: {
-    requiredFeatures: ['camera-access', 'local-floor', 'hit-test', 'hand-tracking'],
-    optionalFeatures: ['anchors', 'layers'],
+    requiredFeatures: ['local-floor', 'hit-test', 'hand-tracking'],
+    optionalFeatures: ['camera-access', 'anchors', 'layers'],
   } as any,
 });
 
@@ -129,7 +130,15 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
       }));
       previewGroupRef.current.add(previewPointsRef.current);
     }
-    onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits`);
+    // Check camera availability for info display
+    let camStatus = '';
+    if (useColor) {
+      const vp = frame.getViewerPose(refSpace);
+      const hasViewCam = !!(vp?.views?.[0] as any)?.camera;
+      const hasFn = typeof (renderer.xr as any).getCameraTexture === 'function';
+      camStatus = hasViewCam ? (hasFn ? ' 📷✓' : ' 📷 no fn') : ' 📷✗';
+    }
+    onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits${camStatus}`);
   });
 
   useEffect(() => {
@@ -149,8 +158,8 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
             if (viewerPose?.views?.length) {
               const view = viewerPose.views[0];
               const xrCamera = (view as any).camera;
+              console.log('[Scan] view.camera:', xrCamera, 'getCameraTexture exists:', typeof (renderer.xr as any).getCameraTexture);
               if (xrCamera) {
-                // Three.js built-in: returns a THREE.Texture
                 const camTexture = (renderer.xr as any).getCameraTexture?.(xrCamera);
                 if (camTexture) {
                   const camW: number = xrCamera.width || 1280;
