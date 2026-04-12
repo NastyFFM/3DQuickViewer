@@ -1,13 +1,22 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
+import { Environment } from '@react-three/drei';
 import * as THREE from 'three';
 
-const store = createXRStore({
+// Two stores: AR for scanning, VR for viewing
+const arStore = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
   hitTest: 'required',
 });
+
+const vrStore = createXRStore({
+  hand: { touchPointer: true, rayPointer: true },
+  controller: { rayPointer: true },
+});
+
+type ViewMode = 'setup' | 'ar' | 'vr';
 
 interface ColoredPoint {
   x: number; y: number; z: number;
@@ -15,9 +24,7 @@ interface ColoredPoint {
 }
 
 /**
- * Creates a grid of NxN hit-test sources from the viewer's perspective.
- * Each frame, reads all hit-test results as live preview points.
- * On pinch, snapshots all current hit points into the accumulated list.
+ * NxN hit-test grid for AR scanning
  */
 function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
   gridSize: number;
@@ -32,87 +39,56 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
   const sourcesCreated = useRef(false);
   const lastGridSize = useRef(0);
 
-  // Add preview group to scene
   useEffect(() => {
     scene.add(previewGroupRef.current);
     return () => { scene.remove(previewGroupRef.current); };
   }, [scene]);
 
-  // Create hit-test sources when session starts or grid size changes
   useEffect(() => {
     const renderer = gl as THREE.WebGLRenderer;
-
     const createSources = async () => {
       const session = renderer.xr.getSession();
       if (!session) return;
-
-      // Clean up old sources
-      for (const src of hitSourcesRef.current) {
-        src.cancel();
-      }
+      for (const src of hitSourcesRef.current) { src.cancel(); }
       hitSourcesRef.current = [];
       sourcesCreated.current = false;
-
       try {
         const viewerSpace = await session.requestReferenceSpace('viewer');
-        const fovDeg = 60; // approximate Quest FOV to cover
-        const fovRad = (fovDeg * Math.PI) / 180;
-
+        const fovRad = (60 * Math.PI) / 180;
         for (let y = 0; y < gridSize; y++) {
           for (let x = 0; x < gridSize; x++) {
-            // Spread rays across the FOV
-            const nx = (x / (gridSize - 1)) - 0.5; // -0.5 to 0.5
+            const nx = (x / (gridSize - 1)) - 0.5;
             const ny = (y / (gridSize - 1)) - 0.5;
-            const dirX = Math.tan(nx * fovRad);
-            const dirY = Math.tan(ny * fovRad);
-
             const ray = new XRRay(
               new DOMPoint(0, 0, 0, 1),
-              new DOMPoint(dirX, -dirY, -1, 0) // -Y because screen Y is inverted
+              new DOMPoint(Math.tan(nx * fovRad), -Math.tan(ny * fovRad), -1, 0)
             );
-
-            const source = await session.requestHitTestSource!({
-              space: viewerSpace,
-              offsetRay: ray,
-            });
+            const source = await session.requestHitTestSource!({ space: viewerSpace, offsetRay: ray });
             hitSourcesRef.current.push(source);
           }
         }
-
         sourcesCreated.current = true;
         lastGridSize.current = gridSize;
-        console.log(`[Scan] Created ${hitSourcesRef.current.length} hit-test sources (${gridSize}x${gridSize})`);
       } catch (err) {
-        console.error('[Scan] Failed to create hit-test sources:', err);
-        onLiveInfo('Hit-Test nicht verfuegbar: ' + (err as Error).message);
+        onLiveInfo('Hit-Test Error: ' + (err as Error).message);
       }
     };
-
-    // Wait for session to be ready
     const check = setInterval(() => {
-      if (renderer.xr.getSession() && (lastGridSize.current !== gridSize || !sourcesCreated.current)) {
-        createSources();
-      }
+      if (renderer.xr.getSession() && (lastGridSize.current !== gridSize || !sourcesCreated.current)) createSources();
     }, 500);
-
     return () => {
       clearInterval(check);
-      for (const src of hitSourcesRef.current) {
-        try { src.cancel(); } catch {}
-      }
+      for (const src of hitSourcesRef.current) { try { src.cancel(); } catch {} }
       hitSourcesRef.current = [];
     };
   }, [gl, gridSize, onLiveInfo]);
 
-  // Each frame: read all hit-test results, update live preview
   useFrame(() => {
     const renderer = gl as THREE.WebGLRenderer;
     const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
     const refSpace = renderer.xr.getReferenceSpace();
-
     if (!frame || !refSpace || !sourcesCreated.current) return;
 
-    // Remove old preview
     if (previewPointsRef.current) {
       previewGroupRef.current.remove(previewPointsRef.current);
       previewPointsRef.current.geometry.dispose();
@@ -131,62 +107,40 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
         if (pose) {
           const p = pose.transform.position;
           const t = Math.min(Math.max((p.y + 0.5) / 3, 0), 1);
-          const r = 0.3 + t * 0.7;
-          const g = 0.8 - t * 0.3;
-          const b = 0.5;
-
           positions.push(p.x, p.y, p.z);
-          colors.push(r, g, b);
-          currentPoints.push({ x: p.x, y: p.y, z: p.z, r, g, b });
+          colors.push(0.3 + t * 0.7, 0.8 - t * 0.3, 0.5);
+          currentPoints.push({ x: p.x, y: p.y, z: p.z, r: 0.3 + t * 0.7, g: 0.8 - t * 0.3, b: 0.5 });
         }
       }
     }
-
     livePointsRef.current = currentPoints;
 
     if (positions.length > 0) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-      const mat = new THREE.PointsMaterial({
-        size: 0.015,
-        vertexColors: true,
-        sizeAttenuation: true,
-        transparent: true,
-        opacity: 0.6,
-      });
-
-      previewPointsRef.current = new THREE.Points(geo, mat);
+      previewPointsRef.current = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 0.015, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.6,
+      }));
       previewGroupRef.current.add(previewPointsRef.current);
     }
-
     onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits`);
   });
 
-  // Listen for pinch to snapshot
   useEffect(() => {
     const renderer = gl as THREE.WebGLRenderer;
-
-    function onSelectStart() {
-      if (livePointsRef.current.length > 0) {
-        console.log(`[Scan] Snapshot: ${livePointsRef.current.length} points`);
-        onSnapshot([...livePointsRef.current]);
-      }
-    }
-
+    const onSelectStart = () => {
+      if (livePointsRef.current.length > 0) onSnapshot([...livePointsRef.current]);
+    };
     const c0 = renderer.xr.getController(0);
     const c1 = renderer.xr.getController(1);
     c0.addEventListener('selectstart', onSelectStart);
     c1.addEventListener('selectstart', onSelectStart);
-    scene.add(c0);
-    scene.add(c1);
-
+    scene.add(c0); scene.add(c1);
     return () => {
       c0.removeEventListener('selectstart', onSelectStart);
       c1.removeEventListener('selectstart', onSelectStart);
-      scene.remove(c0);
-      scene.remove(c1);
+      scene.remove(c0); scene.remove(c1);
     };
   }, [gl, scene, onSnapshot]);
 
@@ -194,11 +148,10 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
 }
 
 /**
- * Renders accumulated snapshot points as instanced spheres
+ * Renders points as WebGL Points
  */
-function SnapshotPoints({ points, pointSize }: { points: ColoredPoint[]; pointSize: number }) {
+function ScanPoints({ points, pointSize }: { points: ColoredPoint[]; pointSize: number }) {
   const ref = useRef<THREE.Points>(null);
-
   useEffect(() => {
     if (!ref.current || points.length === 0) return;
     const positions = new Float32Array(points.length * 3);
@@ -213,12 +166,9 @@ function SnapshotPoints({ points, pointSize }: { points: ColoredPoint[]; pointSi
     }
     ref.current.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     ref.current.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    ref.current.geometry.attributes.position.needsUpdate = true;
-    ref.current.geometry.attributes.color.needsUpdate = true;
   }, [points]);
 
   if (points.length === 0) return null;
-
   return (
     <points ref={ref}>
       <bufferGeometry />
@@ -227,9 +177,30 @@ function SnapshotPoints({ points, pointSize }: { points: ColoredPoint[]; pointSi
   );
 }
 
+/**
+ * VR environment for viewing scan data
+ */
+function VRScanScene({ points, pointSize }: { points: ColoredPoint[]; pointSize: number }) {
+  return (
+    <>
+      <ambientLight intensity={0.6} />
+      <directionalLight position={[5, 5, 5]} intensity={1} />
+      <XROrigin />
+      <ScanPoints points={points} pointSize={pointSize} />
+      <gridHelper args={[20, 20, '#333', '#222']} position={[0, 0.01, 0]} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[20, 20]} />
+        <meshStandardMaterial color="#1a1a2e" transparent opacity={0.8} />
+      </mesh>
+      <Environment preset="city" />
+    </>
+  );
+}
+
 export function RoomScanViewer() {
   const [xrSupported, setXrSupported] = useState(false);
-  const [active, setActive] = useState(false);
+  const [vrSupported, setVrSupported] = useState(false);
+  const [mode, setMode] = useState<ViewMode>('setup');
   const [gridSize, setGridSize] = useState(10);
   const [pointSize, setPointSize] = useState(4);
   const [points, setPoints] = useState<ColoredPoint[]>([]);
@@ -239,6 +210,7 @@ export function RoomScanViewer() {
   useEffect(() => {
     if (navigator.xr) {
       navigator.xr.isSessionSupported('immersive-ar').then(setXrSupported);
+      navigator.xr.isSessionSupported('immersive-vr').then(setVrSupported);
     }
   }, []);
 
@@ -265,110 +237,128 @@ export function RoomScanViewer() {
     const blob = new Blob([header + '\n' + body], { type: 'application/x-ply' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `room-scan-${Date.now()}.ply`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    a.href = url; a.download = `room-scan-${Date.now()}.ply`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
   }, [points]);
+
+  const switchToAR = () => { setMode('ar'); arStore.enterAR(); };
+  const switchToVR = () => { setMode('vr'); vrStore.enterVR(); };
+  const switchToSetup = () => { setMode('setup'); };
+
+  const pxSize = pointSize * 0.003;
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#1a1a2e' }}>
-      {/* Start screen with grid size selector */}
-      {!active && (
+
+      {/* Setup screen */}
+      {mode === 'setup' && (
         <div style={{
           position: 'absolute', top: '50%', left: '50%',
           transform: 'translate(-50%, -50%)', zIndex: 10, textAlign: 'center',
         }}>
-          {xrSupported ? (
-            <>
-              <div style={{ color: '#fff', fontSize: 16, marginBottom: 12 }}>
-                Strahlen-Grid: {gridSize} x {gridSize} = {gridSize * gridSize} Rays
-              </div>
-              <input
-                type="range"
-                min={3} max={30} value={gridSize}
-                onChange={(e) => setGridSize(Number(e.target.value))}
-                style={{ width: 250, marginBottom: 16, accentColor: '#6c63ff' }}
-              />
-              <div style={{ color: '#fff', fontSize: 16, marginBottom: 12 }}>
-                Punktgroesse: {pointSize}px
-              </div>
-              <input
-                type="range"
-                min={1} max={20} value={pointSize}
-                onChange={(e) => setPointSize(Number(e.target.value))}
-                style={{ width: 250, marginBottom: 24, accentColor: '#6c63ff' }}
-              />
-              <br />
-              <button
-                onClick={() => { store.enterAR(); setActive(true); }}
-                style={{
-                  background: '#6c63ff', color: '#fff', border: 'none',
-                  borderRadius: 16, padding: '18px 36px', fontSize: 20,
-                  fontWeight: 700, cursor: 'pointer',
-                  boxShadow: '0 4px 24px rgba(108,99,255,0.4)',
-                }}
-              >
-                📷 Room Scan starten
+          <div style={{ color: '#fff', fontSize: 16, marginBottom: 12 }}>
+            Grid: {gridSize}x{gridSize} = {gridSize * gridSize} Rays
+          </div>
+          <input type="range" min={3} max={30} value={gridSize}
+            onChange={(e) => setGridSize(Number(e.target.value))}
+            style={{ width: 250, marginBottom: 16, accentColor: '#6c63ff' }} />
+          <div style={{ color: '#fff', fontSize: 16, marginBottom: 12 }}>
+            Punktgroesse: {pointSize}px
+          </div>
+          <input type="range" min={1} max={20} value={pointSize}
+            onChange={(e) => setPointSize(Number(e.target.value))}
+            style={{ width: 250, marginBottom: 24, accentColor: '#6c63ff' }} />
+          <br />
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+            {xrSupported && (
+              <button onClick={switchToAR} style={btnMain('#6c63ff')}>
+                📷 AR Scan
               </button>
-            </>
-          ) : (
-            <div style={{ color: '#888' }}>
-              <div style={{ fontSize: 48, marginBottom: 16 }}>📷</div>
-              WebXR AR benoetigt (Quest Browser)
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Live info + controls */}
-      {active && (
-        <div style={{
-          position: 'absolute', bottom: 20, left: '50%',
-          transform: 'translateX(-50%)', zIndex: 10,
-          display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
-          justifyContent: 'center', pointerEvents: 'auto',
-        }}>
-          <div style={{
-            background: 'rgba(0,0,0,0.7)', color: '#fff',
-            borderRadius: 8, padding: '8px 12px', fontSize: 13,
-            fontFamily: 'monospace',
-          }}>
-            {liveInfo} · {points.length.toLocaleString()} gesamt · {snaps} Snaps
+            )}
+            {vrSupported && points.length > 0 && (
+              <button onClick={switchToVR} style={btnMain('#2d6a4f')}>
+                🥽 VR Ansicht ({points.length.toLocaleString()} Pkt)
+              </button>
+            )}
           </div>
           {points.length > 0 && (
-            <>
+            <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'center' }}>
               <button onClick={handleExport} style={btnSmall('#2d6a4f')}>PLY Export</button>
               <button onClick={() => { setPoints([]); setSnaps(0); }} style={btnSmall('#d32f2f')}>Reset</button>
-            </>
+            </div>
+          )}
+          {!xrSupported && !vrSupported && (
+            <div style={{ color: '#888', marginTop: 16 }}>WebXR benoetigt (Quest Browser)</div>
           )}
         </div>
       )}
 
-      {active && (
-        <div style={{
-          position: 'absolute', top: 16, left: '50%',
-          transform: 'translateX(-50%)', zIndex: 10,
-          background: 'rgba(0,0,0,0.7)', color: '#fff',
-          borderRadius: 8, padding: '8px 16px', fontSize: 14,
-          pointerEvents: 'none',
-        }}>
-          Umherschauen — Pinch = Snapshot ({gridSize}x{gridSize})
-        </div>
+      {/* HUD in AR/VR */}
+      {mode !== 'setup' && (
+        <>
+          <div style={{
+            position: 'absolute', top: 16, left: '50%',
+            transform: 'translateX(-50%)', zIndex: 10,
+            background: 'rgba(0,0,0,0.7)', color: '#fff',
+            borderRadius: 8, padding: '8px 16px', fontSize: 14,
+            pointerEvents: 'none',
+          }}>
+            {mode === 'ar' ? `Pinch = Snapshot (${gridSize}x${gridSize})` : `VR Ansicht · ${points.length.toLocaleString()} Punkte`}
+          </div>
+          <div style={{
+            position: 'absolute', bottom: 20, left: '50%',
+            transform: 'translateX(-50%)', zIndex: 10,
+            display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+            justifyContent: 'center', pointerEvents: 'auto',
+          }}>
+            <div style={{
+              background: 'rgba(0,0,0,0.7)', color: '#fff',
+              borderRadius: 8, padding: '8px 12px', fontSize: 13, fontFamily: 'monospace',
+            }}>
+              {mode === 'ar' ? liveInfo + ' · ' : ''}{points.length.toLocaleString()} Pkt · {snaps} Snaps
+            </div>
+            {mode === 'ar' && vrSupported && points.length > 0 && (
+              <button onClick={switchToVR} style={btnSmall('#2d6a4f')}>🥽 VR</button>
+            )}
+            {mode === 'vr' && xrSupported && (
+              <button onClick={switchToAR} style={btnSmall('#6c63ff')}>📷 AR</button>
+            )}
+          </div>
+        </>
       )}
 
-      <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 0], fov: 60 }}>
-        <XR store={store}>
-          <ambientLight intensity={1} />
-          <XROrigin />
-          {active && <HitTestGrid gridSize={gridSize} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
-          <SnapshotPoints points={points} pointSize={pointSize * 0.003} />
-        </XR>
-      </Canvas>
+      {/* AR Canvas */}
+      {(mode === 'setup' || mode === 'ar') && (
+        <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 0], fov: 60 }}>
+          <XR store={arStore}>
+            <ambientLight intensity={1} />
+            <XROrigin />
+            {mode === 'ar' && <HitTestGrid gridSize={gridSize} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
+            <ScanPoints points={points} pointSize={pxSize} />
+          </XR>
+        </Canvas>
+      )}
+
+      {/* VR Canvas */}
+      {mode === 'vr' && (
+        <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 2], fov: 60 }}>
+          <XR store={vrStore}>
+            <VRScanScene points={points} pointSize={pxSize} />
+          </XR>
+        </Canvas>
+      )}
     </div>
   );
+}
+
+function btnMain(bg: string): React.CSSProperties {
+  return {
+    background: bg, color: '#fff', border: 'none',
+    borderRadius: 16, padding: '18px 36px', fontSize: 20,
+    fontWeight: 700, cursor: 'pointer',
+    boxShadow: `0 4px 24px ${bg}66`,
+  };
 }
 
 function btnSmall(bg: string): React.CSSProperties {
