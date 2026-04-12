@@ -126,6 +126,7 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
     const currentPoints: ColoredPoint[] = [];
 
     // Try to get camera texture for color sampling
+    // Correct API: binding.getCameraImage(view.camera) — takes XRCamera, not XRView
     let camTex: WebGLTexture | null = null;
     let camW = 0, camH = 0;
     const glCtx = (gl as THREE.WebGLRenderer).getContext();
@@ -133,12 +134,16 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
 
     if (useColor && hasCameraRef.current && glBindingRef.current && viewerPose?.views?.length) {
       try {
-        camTex = glBindingRef.current.getCameraImage(viewerPose.views[0]);
-        if (camTex) {
-          glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, cameraFbRef.current);
-          glCtx.framebufferTexture2D(glCtx.FRAMEBUFFER, glCtx.COLOR_ATTACHMENT0, glCtx.TEXTURE_2D, camTex, 0);
-          // Read one pixel to check dimensions work
-          camW = 1280; camH = 960; // Quest default
+        const view = viewerPose.views[0];
+        const xrCamera = (view as any).camera; // XRCamera object
+        if (xrCamera) {
+          camTex = glBindingRef.current.getCameraImage(xrCamera);
+          if (camTex) {
+            camW = xrCamera.width || 1280;
+            camH = xrCamera.height || 960;
+            glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, cameraFbRef.current);
+            glCtx.framebufferTexture2D(glCtx.FRAMEBUFFER, glCtx.COLOR_ATTACHMENT0, glCtx.TEXTURE_2D, camTex, 0);
+          }
         }
       } catch {
         camTex = null;
@@ -413,21 +418,28 @@ export function RoomScanViewer() {
                 onChange={(e) => setPointSize(Number(e.target.value))}
                 style={{ width: 250, marginBottom: 24, accentColor: '#6c63ff' }} />
               {/* Color toggle */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 24 }}>
-                <span style={{ color: useColor ? '#4caf50' : '#888', fontSize: 15, fontWeight: 600 }}>
-                  {useColor ? '🎨 Kamerafarbe AN' : '⬜ Kamerafarbe AUS'}
-                </span>
-                <button
-                  onClick={() => setUseColor(!useColor)}
-                  style={{
-                    background: useColor ? '#4caf50' : '#444',
-                    color: '#fff', border: 'none', borderRadius: 20,
-                    padding: '6px 16px', fontSize: 13, cursor: 'pointer',
-                    fontWeight: 600,
-                  }}
-                >
-                  {useColor ? 'Ausschalten' : 'Einschalten'}
-                </button>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, marginBottom: 24 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ color: useColor ? '#4caf50' : '#888', fontSize: 15, fontWeight: 600 }}>
+                    {useColor ? '🎨 Kamerafarbe AN' : '⬜ Kamerafarbe AUS'}
+                  </span>
+                  <button
+                    onClick={() => setUseColor(!useColor)}
+                    style={{
+                      background: useColor ? '#4caf50' : '#444',
+                      color: '#fff', border: 'none', borderRadius: 20,
+                      padding: '6px 16px', fontSize: 13, cursor: 'pointer',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {useColor ? 'Ausschalten' : 'Einschalten'}
+                  </button>
+                </div>
+                {useColor && (
+                  <div style={{ color: '#ff9800', fontSize: 11, maxWidth: 280 }}>
+                    Benoetigt Quest Browser camera-access Support. Falls nicht verfuegbar, wird Hoehen-Faerbung verwendet.
+                  </div>
+                )}
               </div>
               <button
                 onClick={() => {
