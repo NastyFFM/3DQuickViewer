@@ -4,10 +4,21 @@ import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { Environment } from '@react-three/drei';
 import * as THREE from 'three';
 
-const store = createXRStore({
+// Two stores: one without camera, one with (user picks via toggle)
+const storeNoCamera = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
   hitTest: 'required',
+});
+
+const storeWithCamera = createXRStore({
+  hand: { touchPointer: true, rayPointer: true },
+  controller: { rayPointer: true },
+  hitTest: 'required',
+  customSessionInit: {
+    requiredFeatures: ['local-floor', 'hit-test', 'hand-tracking'],
+    optionalFeatures: ['camera-access', 'anchors', 'layers'],
+  } as any,
 });
 
 interface ColoredPoint {
@@ -18,8 +29,9 @@ interface ColoredPoint {
 /**
  * NxN hit-test grid for scanning
  */
-function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
+function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
   gridSize: number;
+  useColor: boolean;
   onSnapshot: (points: ColoredPoint[]) => void;
   onLiveInfo: (info: string) => void;
 }) {
@@ -30,6 +42,10 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
   const previewPointsRef = useRef<THREE.Points | null>(null);
   const sourcesCreated = useRef(false);
   const lastGridSize = useRef(0);
+  // Camera color
+  const glBindingRef = useRef<any>(null);
+  const cameraFbRef = useRef<WebGLFramebuffer | null>(null);
+  const hasCameraRef = useRef(false);
 
   useEffect(() => {
     scene.add(previewGroupRef.current);
@@ -61,6 +77,23 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
         }
         sourcesCreated.current = true;
         lastGridSize.current = gridSize;
+
+        // Try camera access binding
+        if (useColor && !glBindingRef.current) {
+          try {
+            const glCtx = renderer.getContext();
+            const Binding = (window as any).XRWebGLBinding;
+            if (Binding) {
+              glBindingRef.current = new Binding(session, glCtx);
+              cameraFbRef.current = glCtx.createFramebuffer();
+              hasCameraRef.current = true;
+              console.log('[Scan] Camera binding created');
+            }
+          } catch (e) {
+            console.log('[Scan] No camera access:', e);
+            hasCameraRef.current = false;
+          }
+        }
       } catch (err) {
         onLiveInfo('Hit-Test Error: ' + (err as Error).message);
       }
@@ -92,19 +125,66 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
     const colors: number[] = [];
     const currentPoints: ColoredPoint[] = [];
 
+    // Try to get camera texture for color sampling
+    let camTex: WebGLTexture | null = null;
+    let camW = 0, camH = 0;
+    const glCtx = (gl as THREE.WebGLRenderer).getContext();
+    const viewerPose = frame.getViewerPose(refSpace);
+
+    if (useColor && hasCameraRef.current && glBindingRef.current && viewerPose?.views?.length) {
+      try {
+        camTex = glBindingRef.current.getCameraImage(viewerPose.views[0]);
+        if (camTex) {
+          glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, cameraFbRef.current);
+          glCtx.framebufferTexture2D(glCtx.FRAMEBUFFER, glCtx.COLOR_ATTACHMENT0, glCtx.TEXTURE_2D, camTex, 0);
+          // Read one pixel to check dimensions work
+          camW = 1280; camH = 960; // Quest default
+        }
+      } catch {
+        camTex = null;
+      }
+    }
+
+    const pixel = new Uint8Array(4);
+    let srcIdx = 0;
+    let colorHits = 0;
+
     for (const source of hitSourcesRef.current) {
       const results = frame.getHitTestResults(source);
       if (results.length > 0) {
         const pose = results[0].getPose(refSpace);
         if (pose) {
           const p = pose.transform.position;
-          const t = Math.min(Math.max((p.y + 0.5) / 3, 0), 1);
+          let r: number, g: number, b: number;
+
+          if (camTex && camW > 0) {
+            // Sample camera pixel at grid UV
+            const gx = srcIdx % gridSize;
+            const gy = Math.floor(srcIdx / gridSize);
+            const u = gx / (gridSize - 1);
+            const v = 1 - (gy / (gridSize - 1));
+            try {
+              glCtx.readPixels(Math.floor(u * (camW - 1)), Math.floor(v * (camH - 1)), 1, 1, glCtx.RGBA, glCtx.UNSIGNED_BYTE, pixel);
+              r = pixel[0] / 255; g = pixel[1] / 255; b = pixel[2] / 255;
+              colorHits++;
+            } catch {
+              const t = Math.min(Math.max((p.y + 0.5) / 3, 0), 1);
+              r = 0.3 + t * 0.7; g = 0.8 - t * 0.3; b = 0.5;
+            }
+          } else {
+            const t = Math.min(Math.max((p.y + 0.5) / 3, 0), 1);
+            r = 0.3 + t * 0.7; g = 0.8 - t * 0.3; b = 0.5;
+          }
+
           positions.push(p.x, p.y, p.z);
-          colors.push(0.3 + t * 0.7, 0.8 - t * 0.3, 0.5);
-          currentPoints.push({ x: p.x, y: p.y, z: p.z, r: 0.3 + t * 0.7, g: 0.8 - t * 0.3, b: 0.5 });
+          colors.push(r, g, b);
+          currentPoints.push({ x: p.x, y: p.y, z: p.z, r, g, b });
         }
       }
+      srcIdx++;
     }
+
+    if (camTex) glCtx.bindFramebuffer(glCtx.FRAMEBUFFER, null);
     livePointsRef.current = currentPoints;
 
     if (positions.length > 0) {
@@ -116,7 +196,9 @@ function HitTestGrid({ gridSize, onSnapshot, onLiveInfo }: {
       }));
       previewGroupRef.current.add(previewPointsRef.current);
     }
-    onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits`);
+
+    const colorInfo = useColor ? (colorHits > 0 ? ` 🎨${colorHits}` : ' (no cam)') : '';
+    onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits${colorInfo}`);
   });
 
   useEffect(() => {
@@ -265,6 +347,7 @@ export function RoomScanViewer() {
   const [xrSupported, setXrSupported] = useState(false);
   const [active, setActive] = useState(false);
   const [showVRRoom, setShowVRRoom] = useState(false);
+  const [useColor, setUseColor] = useState(false);
   const [gridSize, setGridSize] = useState(10);
   const [pointSize, setPointSize] = useState(4);
   const [points, setPoints] = useState<ColoredPoint[]>([]);
@@ -329,9 +412,29 @@ export function RoomScanViewer() {
               <input type="range" min={1} max={20} value={pointSize}
                 onChange={(e) => setPointSize(Number(e.target.value))}
                 style={{ width: 250, marginBottom: 24, accentColor: '#6c63ff' }} />
-              <br />
+              {/* Color toggle */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 24 }}>
+                <span style={{ color: useColor ? '#4caf50' : '#888', fontSize: 15, fontWeight: 600 }}>
+                  {useColor ? '🎨 Kamerafarbe AN' : '⬜ Kamerafarbe AUS'}
+                </span>
+                <button
+                  onClick={() => setUseColor(!useColor)}
+                  style={{
+                    background: useColor ? '#4caf50' : '#444',
+                    color: '#fff', border: 'none', borderRadius: 20,
+                    padding: '6px 16px', fontSize: 13, cursor: 'pointer',
+                    fontWeight: 600,
+                  }}
+                >
+                  {useColor ? 'Ausschalten' : 'Einschalten'}
+                </button>
+              </div>
               <button
-                onClick={() => { store.enterAR(); setActive(true); }}
+                onClick={() => {
+                  const s = useColor ? storeWithCamera : storeNoCamera;
+                  s.enterAR();
+                  setActive(true);
+                }}
                 style={{
                   background: '#6c63ff', color: '#fff', border: 'none',
                   borderRadius: 16, padding: '18px 36px', fontSize: 20,
@@ -390,13 +493,13 @@ export function RoomScanViewer() {
 
       {/* Single AR Canvas — VR room is just a toggle overlay */}
       <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 0], fov: 60 }}>
-        <XR store={store}>
+        <XR store={useColor ? storeWithCamera : storeNoCamera}>
           <ambientLight intensity={showVRRoom ? 0.6 : 1} />
           {showVRRoom && <directionalLight position={[5, 5, 5]} intensity={1} />}
           <XROrigin />
 
           {/* Hit-test scanning (always active in AR) */}
-          {active && <HitTestGrid gridSize={gridSize} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
+          {active && <HitTestGrid gridSize={gridSize} useColor={useColor} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
 
           {/* Accumulated points (always visible) */}
           <ScanPoints points={points} pointSize={pxSize} />
