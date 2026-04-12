@@ -178,6 +178,54 @@ function ScanPoints({ points, pointSize }: { points: ColoredPoint[]; pointSize: 
 }
 
 /**
+ * Floating 3D button in XR space — tap to switch AR/VR.
+ * Follows the user's gaze, positioned bottom-left.
+ */
+function XRModeButton({ label, color, onPress }: { label: string; color: string; onPress: () => void }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const [hovered, setHovered] = useState(false);
+  const { camera } = useThree();
+
+  // Position the button relative to camera each frame
+  useFrame(() => {
+    if (!groupRef.current) return;
+    // Place it in front of the camera, bottom-left
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+    groupRef.current.position.copy(camera.position)
+      .add(dir.multiplyScalar(1.2))
+      .add(right.multiplyScalar(-0.35))
+      .add(up.multiplyScalar(-0.25));
+    groupRef.current.quaternion.copy(camera.quaternion);
+  });
+
+  return (
+    <group ref={groupRef}>
+      <mesh
+        onPointerDown={onPress}
+        onPointerOver={() => setHovered(true)}
+        onPointerOut={() => setHovered(false)}
+      >
+        <boxGeometry args={[0.2, 0.08, 0.02]} />
+        <meshStandardMaterial
+          color={hovered ? '#ffffff' : color}
+          emissive={color}
+          emissiveIntensity={hovered ? 0.5 : 0.2}
+        />
+      </mesh>
+      {/* Label using a simple plane with canvas texture would be complex,
+          so we use a small sphere as indicator instead */}
+      <mesh position={[0, 0, 0.015]}>
+        <sphereGeometry args={[0.015, 8, 8]} />
+        <meshBasicMaterial color={hovered ? '#fff' : '#000'} />
+      </mesh>
+    </group>
+  );
+}
+
+/**
  * VR environment for viewing scan data
  */
 function VRScanScene({ points, pointSize }: { points: ColoredPoint[]; pointSize: number }) {
@@ -244,7 +292,6 @@ export function RoomScanViewer() {
 
   const switchToAR = () => { setMode('ar'); arStore.enterAR(); };
   const switchToVR = () => { setMode('vr'); vrStore.enterVR(); };
-  const switchToSetup = () => { setMode('setup'); };
 
   const pxSize = pointSize * 0.003;
 
@@ -336,6 +383,9 @@ export function RoomScanViewer() {
             <XROrigin />
             {mode === 'ar' && <HitTestGrid gridSize={gridSize} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
             <ScanPoints points={points} pointSize={pxSize} />
+            {mode === 'ar' && vrSupported && points.length > 0 && (
+              <XRModeButton label="VR" color="#2d6a4f" onPress={switchToVR} />
+            )}
           </XR>
         </Canvas>
       )}
@@ -345,6 +395,9 @@ export function RoomScanViewer() {
         <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 2], fov: 60 }}>
           <XR store={vrStore}>
             <VRScanScene points={points} pointSize={pxSize} />
+            {xrSupported && (
+              <XRModeButton label="AR" color="#6c63ff" onPress={switchToAR} />
+            )}
           </XR>
         </Canvas>
       )}
