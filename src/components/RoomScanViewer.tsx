@@ -11,6 +11,20 @@ const store = createXRStore({
   hitTest: 'required',
 });
 
+// Inject camera-access into AR session requests.
+// customSessionInit would override all built-in features (hit-test, hand tracking, etc.),
+// so we patch requestSession to append camera-access as optional instead.
+if (typeof navigator !== 'undefined' && navigator.xr) {
+  const _origRequestSession = navigator.xr.requestSession.bind(navigator.xr);
+  (navigator.xr as any).requestSession = (mode: string, init?: any) => {
+    if (mode === 'immersive-ar') {
+      init = init || {};
+      init.optionalFeatures = [...(init.optionalFeatures || []), 'camera-access'];
+    }
+    return _origRequestSession(mode, init);
+  };
+}
+
 /**
  * Diagnostic component — checks every frame what XR features are available
  * and reports to parent via callback. Completely independent of hit-tests.
@@ -79,6 +93,34 @@ function CameraDiagnostics({ onLog }: { onLog: (log: string) => void }) {
 interface ColoredPoint {
   x: number; y: number; z: number;
   r: number; g: number; b: number;
+}
+
+/** Project a 3D world point to camera pixel coords via view + projection matrices. */
+function worldToPixel(
+  pt: { x: number; y: number; z: number },
+  viewMatrix: Float32Array,
+  projMatrix: Float32Array,
+  width: number,
+  height: number,
+): { px: number; py: number } | null {
+  const { x, y, z } = pt;
+  // World → View space (column-major 4x4)
+  const vx = viewMatrix[0] * x + viewMatrix[4] * y + viewMatrix[8] * z + viewMatrix[12];
+  const vy = viewMatrix[1] * x + viewMatrix[5] * y + viewMatrix[9] * z + viewMatrix[13];
+  const vz = viewMatrix[2] * x + viewMatrix[6] * y + viewMatrix[10] * z + viewMatrix[14];
+  const vw = viewMatrix[3] * x + viewMatrix[7] * y + viewMatrix[11] * z + viewMatrix[15];
+  // View → Clip space
+  const cx = projMatrix[0] * vx + projMatrix[4] * vy + projMatrix[8] * vz + projMatrix[12] * vw;
+  const cy = projMatrix[1] * vx + projMatrix[5] * vy + projMatrix[9] * vz + projMatrix[13] * vw;
+  const cw = projMatrix[3] * vx + projMatrix[7] * vy + projMatrix[11] * vz + projMatrix[15] * vw;
+  if (cw <= 0) return null; // behind camera
+  const ndcX = cx / cw;
+  const ndcY = cy / cw;
+  if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) return null;
+  // NDC → pixel  (readRenderTargetPixels origin = bottom-left, y-up = NDC y-up)
+  const px = Math.min(Math.max(Math.round(((ndcX + 1) / 2) * (width - 1)), 0), width - 1);
+  const py = Math.min(Math.max(Math.round(((ndcY + 1) / 2) * (height - 1)), 0), height - 1);
+  return { px, py };
 }
 
 /**
@@ -202,7 +244,7 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
 
       let snapshotPoints = [...livePointsRef.current];
 
-      // If color mode, use Three.js renderer.xr.getCameraTexture()
+      // If color mode, sample camera texture via proper 3D→2D projection
       if (useColor) {
         try {
           const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
@@ -212,44 +254,52 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
             if (viewerPose?.views?.length) {
               const view = viewerPose.views[0];
               const xrCamera = (view as any).camera;
-              console.log('[Scan] view.camera:', xrCamera, 'getCameraTexture exists:', typeof (renderer.xr as any).getCameraTexture);
               if (xrCamera) {
                 const camTexture = (renderer.xr as any).getCameraTexture?.(xrCamera);
                 if (camTexture) {
                   const camW: number = xrCamera.width || 1280;
                   const camH: number = xrCamera.height || 960;
 
-                  // Render camera texture to a render target so we can readPixels
+                  // Render camera texture to render target via fullscreen quad
                   const rt = new THREE.WebGLRenderTarget(camW, camH);
-                  const readBuf = new Uint8Array(4);
-
-                  // Copy camera texture into the render target via a fullscreen quad
                   const prevRT = renderer.getRenderTarget();
                   const copyScene = new THREE.Scene();
-                  const copyCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+                  const copyCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
                   const quad = new THREE.Mesh(
                     new THREE.PlaneGeometry(2, 2),
-                    new THREE.MeshBasicMaterial({ map: camTexture })
+                    new THREE.MeshBasicMaterial({ map: camTexture }),
                   );
                   copyScene.add(quad);
                   renderer.setRenderTarget(rt);
-                  renderer.render(copyScene, copyCamera);
+                  renderer.render(copyScene, copyCam);
 
-                  snapshotPoints = snapshotPoints.map((pt, idx) => {
-                    const gx = idx % gridSize;
-                    const gy = Math.floor(idx / gridSize);
-                    const px = Math.floor((gx / (gridSize - 1)) * (camW - 1));
-                    const py = Math.floor((gy / (gridSize - 1)) * (camH - 1));
-                    renderer.readRenderTargetPixels(rt, px, py, 1, 1, readBuf);
-                    return { ...pt, r: readBuf[0] / 255, g: readBuf[1] / 255, b: readBuf[2] / 255 };
-                  });
+                  // Read ALL pixels in one GPU sync (fast)
+                  const allPixels = new Uint8Array(camW * camH * 4);
+                  renderer.readRenderTargetPixels(rt, 0, 0, camW, camH, allPixels);
 
                   renderer.setRenderTarget(prevRT);
                   rt.dispose();
                   quad.geometry.dispose();
                   (quad.material as THREE.Material).dispose();
 
-                  console.log(`[Scan] Camera RGB: ${snapshotPoints.length} pixels from ${camW}x${camH}`);
+                  // Project each 3D hit point into camera pixel coords
+                  const viewMatrix = view.transform.inverse.matrix as Float32Array;
+                  const projMatrix = view.projectionMatrix as Float32Array;
+                  let colored = 0;
+                  snapshotPoints = snapshotPoints.map((pt) => {
+                    const pixel = worldToPixel(pt, viewMatrix, projMatrix, camW, camH);
+                    if (!pixel) return pt; // behind camera or outside frustum
+                    const offset = (pixel.py * camW + pixel.px) * 4;
+                    colored++;
+                    return {
+                      ...pt,
+                      r: allPixels[offset] / 255,
+                      g: allPixels[offset + 1] / 255,
+                      b: allPixels[offset + 2] / 255,
+                    };
+                  });
+
+                  console.log(`[Scan] Camera RGB: ${colored}/${snapshotPoints.length} pts from ${camW}x${camH}`);
                 } else {
                   console.log('[Scan] getCameraTexture returned null');
                 }
