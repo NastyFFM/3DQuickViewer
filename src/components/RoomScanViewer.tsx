@@ -11,6 +11,71 @@ const store = createXRStore({
   hitTest: 'required',
 });
 
+/**
+ * Diagnostic component — checks every frame what XR features are available
+ * and reports to parent via callback. Completely independent of hit-tests.
+ */
+function CameraDiagnostics({ onLog }: { onLog: (log: string) => void }) {
+  const { gl } = useThree();
+  const frameCount = useRef(0);
+
+  useFrame(() => {
+    frameCount.current++;
+    if (frameCount.current % 60 !== 1) return; // Update once per second
+
+    const renderer = gl as THREE.WebGLRenderer;
+    const lines: string[] = [];
+
+    // Session
+    const session = renderer.xr.getSession();
+    lines.push(session ? 'Session: ✓' : 'Session: ✗');
+
+    if (!session) { onLog(lines.join(' | ')); return; }
+
+    // Reference space
+    const refSpace = renderer.xr.getReferenceSpace();
+    lines.push(refSpace ? 'RefSpace: ✓' : 'RefSpace: ✗');
+
+    // Frame
+    const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
+    lines.push(frame ? 'Frame: ✓' : 'Frame: ✗');
+
+    if (!frame || !refSpace) { onLog(lines.join(' | ')); return; }
+
+    // Viewer pose
+    const pose = frame.getViewerPose(refSpace);
+    lines.push(pose ? `Views: ${pose.views.length}` : 'Pose: ✗');
+
+    if (pose?.views?.length) {
+      const view = pose.views[0];
+      // view.camera
+      const xrCam = (view as any).camera;
+      lines.push(xrCam ? `XRCamera: ${xrCam.width}x${xrCam.height}` : 'XRCamera: null');
+
+      // getCameraTexture
+      const fn = (renderer.xr as any).getCameraTexture;
+      lines.push(typeof fn === 'function' ? 'getCamTex: ✓' : 'getCamTex: ✗');
+
+      // Try calling it
+      if (xrCam && typeof fn === 'function') {
+        try {
+          const tex = fn.call(renderer.xr, xrCam);
+          lines.push(tex ? `Texture: ✓ (${tex.constructor.name})` : 'Texture: null');
+        } catch (e: any) {
+          lines.push(`Texture: ERR ${e.message?.substring(0, 30)}`);
+        }
+      }
+    }
+
+    // Input sources
+    lines.push(`Inputs: ${session.inputSources.length}`);
+
+    onLog(lines.join(' | '));
+  });
+
+  return null;
+}
+
 interface ColoredPoint {
   x: number; y: number; z: number;
   r: number; g: number; b: number;
@@ -347,6 +412,7 @@ export function RoomScanViewer() {
   const [points, setPoints] = useState<ColoredPoint[]>([]);
   const [snaps, setSnaps] = useState(0);
   const [liveInfo, setLiveInfo] = useState('');
+  const [debugLog, setDebugLog] = useState('Warte auf XR...');
 
   useEffect(() => {
     if (navigator.xr) {
@@ -463,8 +529,18 @@ export function RoomScanViewer() {
       {/* HUD */}
       {active && (
         <>
+          {/* Debug panel — always visible */}
           <div style={{
-            position: 'absolute', top: 16, left: '50%',
+            position: 'absolute', top: 8, left: 8, right: 8, zIndex: 20,
+            background: 'rgba(0,0,0,0.85)', color: '#0f0',
+            borderRadius: 8, padding: '8px 12px', fontSize: 11,
+            fontFamily: 'monospace', pointerEvents: 'none',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+          }}>
+            {debugLog}
+          </div>
+          <div style={{
+            position: 'absolute', top: 80, left: '50%',
             transform: 'translateX(-50%)', zIndex: 10,
             background: 'rgba(0,0,0,0.7)', color: '#fff',
             borderRadius: 8, padding: '8px 16px', fontSize: 14,
@@ -499,6 +575,7 @@ export function RoomScanViewer() {
           <XROrigin />
 
           {/* Hit-test scanning (always active in AR) */}
+          {active && <CameraDiagnostics onLog={setDebugLog} />}
           {active && <HitTestGrid gridSize={gridSize} useColor={useColor} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
 
           {/* Accumulated points (always visible) */}
