@@ -131,9 +131,10 @@ function worldToPixel(
 /**
  * NxN hit-test grid for scanning
  */
-function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
+function HitTestGrid({ gridSize, useColor, videoRef, onSnapshot, onLiveInfo }: {
   gridSize: number;
   useColor: boolean;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
   onSnapshot: (points: ColoredPoint[]) => void;
   onLiveInfo: (info: string) => void;
 }) {
@@ -149,10 +150,6 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
   const useColorRef = useRef(useColor);
   useColorRef.current = useColor;
 
-  // getUserMedia video fallback for devices without camera-access WebXR feature
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const videoReadyRef = useRef(false);
-
   // Snapshot debug feedback (shown in HUD for 8 seconds)
   const snapInfoRef = useRef('');
   const snapTimeRef = useRef(0);
@@ -160,33 +157,6 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
   // Pending snapshot flag — selectstart sets this, useFrame processes it
   // (camera/frame access only works inside the XR animation frame)
   const pendingSnapshotRef = useRef(false);
-
-  useEffect(() => {
-    if (!useColor) return;
-    let cancelled = false;
-    navigator.mediaDevices?.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 } },
-    }).then((stream) => {
-      if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
-      const video = document.createElement('video');
-      video.setAttribute('playsinline', '');
-      video.srcObject = stream;
-      video.onloadedmetadata = () => { videoReadyRef.current = true; };
-      video.play();
-      videoRef.current = video;
-      console.log('[Scan] getUserMedia fallback ready');
-    }).catch((err) => {
-      console.log('[Scan] getUserMedia fallback unavailable:', err.message);
-    });
-    return () => {
-      cancelled = true;
-      if (videoRef.current?.srcObject) {
-        (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
-      }
-      videoRef.current = null;
-      videoReadyRef.current = false;
-    };
-  }, [useColor]);
 
   useEffect(() => {
     scene.add(previewGroupRef.current);
@@ -279,7 +249,7 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
     if (useColor) {
       const vp = frame.getViewerPose(refSpace);
       const hasViewCam = !!(vp?.views?.[0] as any)?.camera;
-      const hasVideo = videoReadyRef.current;
+      const hasVideo = videoRef.current && videoRef.current.readyState >= 2;
       camStatus = hasViewCam ? ' 📷XR' : hasVideo ? ' 📷Video' : ' 📷✗';
     }
     // --- Process pending snapshot (color sampling must happen inside animation frame) ---
@@ -333,9 +303,10 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
               const video = videoRef.current;
               const vw = video?.videoWidth ?? 0;
               const vh = video?.videoHeight ?? 0;
-              status += `vid:${!!video} ${vw}x${vh} rs=${video?.readyState ?? -1} `;
+              const rs = video?.readyState ?? -1;
+              status += `vid:${!!video} ${vw}x${vh} rs=${rs} `;
 
-              if (video && vw > 0 && vh > 0 && video.readyState >= 2) {
+              if (video && vw > 0 && vh > 0 && rs >= 2) {
                 const canvas = document.createElement('canvas');
                 canvas.width = vw; canvas.height = vh;
                 const ctx = canvas.getContext('2d')!;
@@ -532,6 +503,46 @@ export function RoomScanViewer() {
   const [snaps, setSnaps] = useState(0);
   const [liveInfo, setLiveInfo] = useState('');
   const [debugLog, setDebugLog] = useState('Warte auf XR...');
+  const [videoStatus, setVideoStatus] = useState('');
+
+  // Start getUserMedia on setup screen (before XR session locks the camera)
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    if (!useColor) {
+      // Stop stream when color is turned off
+      if (videoRef.current?.srcObject) {
+        (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+      }
+      videoRef.current = null;
+      setVideoStatus('');
+      return;
+    }
+    let cancelled = false;
+    setVideoStatus('Kamera wird gestartet...');
+    navigator.mediaDevices?.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 } },
+    }).then((stream) => {
+      if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+      const video = document.createElement('video');
+      video.setAttribute('playsinline', '');
+      video.srcObject = stream;
+      video.onloadedmetadata = () => {
+        setVideoStatus(`Kamera bereit: ${video.videoWidth}x${video.videoHeight}`);
+      };
+      video.play();
+      videoRef.current = video;
+    }).catch((err) => {
+      setVideoStatus(`Kamera Fehler: ${err.message}`);
+    });
+    return () => {
+      cancelled = true;
+      if (videoRef.current?.srcObject) {
+        (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+      }
+      videoRef.current = null;
+    };
+  }, [useColor]);
 
   useEffect(() => {
     if (navigator.xr) {
@@ -610,8 +621,8 @@ export function RoomScanViewer() {
                   </button>
                 </div>
                 {useColor && (
-                  <div style={{ color: '#ff9800', fontSize: 11, maxWidth: 280 }}>
-                    Nutzt WebXR camera-access oder getUserMedia Fallback fuer Kamerafarben.
+                  <div style={{ color: videoStatus.includes('bereit') ? '#4caf50' : '#ff9800', fontSize: 11, maxWidth: 280 }}>
+                    {videoStatus || 'Kamerafarbe aktiviert'}
                   </div>
                 )}
               </div>
@@ -695,7 +706,7 @@ export function RoomScanViewer() {
 
           {/* Hit-test scanning (always active in AR) */}
           {active && <CameraDiagnostics onLog={setDebugLog} />}
-          {active && <HitTestGrid gridSize={gridSize} useColor={useColor} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
+          {active && <HitTestGrid gridSize={gridSize} useColor={useColor} videoRef={videoRef} onSnapshot={handleSnapshot} onLiveInfo={handleLiveInfo} />}
 
           {/* Accumulated points (always visible) */}
           <ScanPoints points={points} pointSize={pxSize} />
