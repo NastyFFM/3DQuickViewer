@@ -81,6 +81,11 @@ function CameraDiagnostics({ onLog }: { onLog: (log: string) => void }) {
       }
     }
 
+    // Enabled features
+    const ef = (session as any).enabledFeatures as string[] | undefined;
+    const hasCamFeature = ef?.includes('camera-access');
+    lines.push(hasCamFeature ? 'cam-access: ✓' : 'cam-access: ✗');
+
     // Input sources
     lines.push(`Inputs: ${session.inputSources.length}`);
 
@@ -139,6 +144,37 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
   const previewPointsRef = useRef<THREE.Points | null>(null);
   const sourcesCreated = useRef(false);
   const lastGridSize = useRef(0);
+
+  // getUserMedia video fallback for devices without camera-access WebXR feature
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoReadyRef = useRef(false);
+
+  useEffect(() => {
+    if (!useColor) return;
+    let cancelled = false;
+    navigator.mediaDevices?.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 960 } },
+    }).then((stream) => {
+      if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+      const video = document.createElement('video');
+      video.setAttribute('playsinline', '');
+      video.srcObject = stream;
+      video.onloadedmetadata = () => { videoReadyRef.current = true; };
+      video.play();
+      videoRef.current = video;
+      console.log('[Scan] getUserMedia fallback ready');
+    }).catch((err) => {
+      console.log('[Scan] getUserMedia fallback unavailable:', err.message);
+    });
+    return () => {
+      cancelled = true;
+      if (videoRef.current?.srcObject) {
+        (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+      }
+      videoRef.current = null;
+      videoReadyRef.current = false;
+    };
+  }, [useColor]);
 
   useEffect(() => {
     scene.add(previewGroupRef.current);
@@ -231,8 +267,8 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
     if (useColor) {
       const vp = frame.getViewerPose(refSpace);
       const hasViewCam = !!(vp?.views?.[0] as any)?.camera;
-      const hasFn = typeof (renderer.xr as any).getCameraTexture === 'function';
-      camStatus = hasViewCam ? (hasFn ? ' 📷✓' : ' 📷 no fn') : ' 📷✗';
+      const hasVideo = videoReadyRef.current;
+      camStatus = hasViewCam ? ' 📷XR' : hasVideo ? ' 📷Video' : ' 📷✗';
     }
     onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits${camStatus}`);
   });
@@ -244,8 +280,9 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
 
       let snapshotPoints = [...livePointsRef.current];
 
-      // If color mode, sample camera texture via proper 3D→2D projection
+      // If color mode, try camera-access first, then getUserMedia video fallback
       if (useColor) {
+        let didColor = false;
         try {
           const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
           const refSpace = renderer.xr.getReferenceSpace();
@@ -254,13 +291,13 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
             if (viewerPose?.views?.length) {
               const view = viewerPose.views[0];
               const xrCamera = (view as any).camera;
+
+              // --- Path A: WebXR camera-access (best quality) ---
               if (xrCamera) {
                 const camTexture = (renderer.xr as any).getCameraTexture?.(xrCamera);
                 if (camTexture) {
                   const camW: number = xrCamera.width || 1280;
                   const camH: number = xrCamera.height || 960;
-
-                  // Render camera texture to render target via fullscreen quad
                   const rt = new THREE.WebGLRenderTarget(camW, camH);
                   const prevRT = renderer.getRenderTarget();
                   const copyScene = new THREE.Scene();
@@ -272,39 +309,58 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
                   copyScene.add(quad);
                   renderer.setRenderTarget(rt);
                   renderer.render(copyScene, copyCam);
-
-                  // Read ALL pixels in one GPU sync (fast)
                   const allPixels = new Uint8Array(camW * camH * 4);
                   renderer.readRenderTargetPixels(rt, 0, 0, camW, camH, allPixels);
-
                   renderer.setRenderTarget(prevRT);
                   rt.dispose();
                   quad.geometry.dispose();
                   (quad.material as THREE.Material).dispose();
 
-                  // Project each 3D hit point into camera pixel coords
                   const viewMatrix = view.transform.inverse.matrix as Float32Array;
                   const projMatrix = view.projectionMatrix as Float32Array;
                   let colored = 0;
                   snapshotPoints = snapshotPoints.map((pt) => {
                     const pixel = worldToPixel(pt, viewMatrix, projMatrix, camW, camH);
-                    if (!pixel) return pt; // behind camera or outside frustum
+                    if (!pixel) return pt;
                     const offset = (pixel.py * camW + pixel.px) * 4;
                     colored++;
-                    return {
-                      ...pt,
-                      r: allPixels[offset] / 255,
-                      g: allPixels[offset + 1] / 255,
-                      b: allPixels[offset + 2] / 255,
-                    };
+                    return { ...pt, r: allPixels[offset] / 255, g: allPixels[offset + 1] / 255, b: allPixels[offset + 2] / 255 };
                   });
-
-                  console.log(`[Scan] Camera RGB: ${colored}/${snapshotPoints.length} pts from ${camW}x${camH}`);
-                } else {
-                  console.log('[Scan] getCameraTexture returned null');
+                  didColor = colored > 0;
+                  console.log(`[Scan] XR camera RGB: ${colored}/${snapshotPoints.length} pts from ${camW}x${camH}`);
                 }
-              } else {
-                console.log('[Scan] view.camera is null — camera-access not granted?');
+              }
+
+              // --- Path B: getUserMedia video fallback ---
+              if (!didColor && videoRef.current && videoReadyRef.current) {
+                const video = videoRef.current;
+                const vw = video.videoWidth || 1280;
+                const vh = video.videoHeight || 960;
+                const canvas = document.createElement('canvas');
+                canvas.width = vw;
+                canvas.height = vh;
+                const ctx = canvas.getContext('2d')!;
+                ctx.drawImage(video, 0, 0, vw, vh);
+                const imgData = ctx.getImageData(0, 0, vw, vh);
+
+                const viewMatrix = view.transform.inverse.matrix as Float32Array;
+                const projMatrix = view.projectionMatrix as Float32Array;
+                let colored = 0;
+                snapshotPoints = snapshotPoints.map((pt) => {
+                  const pixel = worldToPixel(pt, viewMatrix, projMatrix, vw, vh);
+                  if (!pixel) return pt;
+                  // Canvas origin = top-left → flip Y
+                  const canvasY = (vh - 1) - pixel.py;
+                  const offset = (canvasY * vw + pixel.px) * 4;
+                  colored++;
+                  return { ...pt, r: imgData.data[offset] / 255, g: imgData.data[offset + 1] / 255, b: imgData.data[offset + 2] / 255 };
+                });
+                didColor = colored > 0;
+                console.log(`[Scan] Video fallback RGB: ${colored}/${snapshotPoints.length} pts from ${vw}x${vh}`);
+              }
+
+              if (!didColor) {
+                console.log('[Scan] No camera source available — using height colors');
               }
             }
           }
@@ -542,7 +598,7 @@ export function RoomScanViewer() {
                 </div>
                 {useColor && (
                   <div style={{ color: '#ff9800', fontSize: 11, maxWidth: 280 }}>
-                    Benoetigt Quest Browser camera-access Support. Falls nicht verfuegbar, wird Hoehen-Faerbung verwendet.
+                    Nutzt WebXR camera-access oder getUserMedia Fallback fuer Kamerafarben.
                   </div>
                 )}
               </div>
