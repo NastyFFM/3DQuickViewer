@@ -145,9 +145,17 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
   const sourcesCreated = useRef(false);
   const lastGridSize = useRef(0);
 
+  // Ref to avoid stale closure on useColor in event handlers
+  const useColorRef = useRef(useColor);
+  useColorRef.current = useColor;
+
   // getUserMedia video fallback for devices without camera-access WebXR feature
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const videoReadyRef = useRef(false);
+
+  // Snapshot debug feedback (shown in HUD for 8 seconds)
+  const snapInfoRef = useRef('');
+  const snapTimeRef = useRef(0);
 
   useEffect(() => {
     if (!useColor) return;
@@ -270,7 +278,9 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
       const hasVideo = videoReadyRef.current;
       camStatus = hasViewCam ? ' 📷XR' : hasVideo ? ' 📷Video' : ' 📷✗';
     }
-    onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits${camStatus}`);
+    const snapAge = Date.now() - snapTimeRef.current;
+    const snapInfo = snapAge < 8000 && snapInfoRef.current ? ` · ${snapInfoRef.current}` : '';
+    onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits${camStatus}${snapInfo}`);
   });
 
   useEffect(() => {
@@ -281,16 +291,21 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
       let snapshotPoints = [...livePointsRef.current];
 
       // If color mode, try camera-access first, then getUserMedia video fallback
-      if (useColor) {
-        let didColor = false;
+      if (useColorRef.current) {
+        let status = 'color: ';
         try {
           const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
           const refSpace = renderer.xr.getReferenceSpace();
-          if (frame && refSpace) {
+          if (!frame || !refSpace) { status += 'no frame/ref'; }
+          else {
             const viewerPose = frame.getViewerPose(refSpace);
-            if (viewerPose?.views?.length) {
+            if (!viewerPose?.views?.length) { status += 'no pose'; }
+            else {
               const view = viewerPose.views[0];
               const xrCamera = (view as any).camera;
+              const viewMatrix = view.transform.inverse.matrix as Float32Array;
+              const projMatrix = view.projectionMatrix as Float32Array;
+              let colored = 0;
 
               // --- Path A: WebXR camera-access (best quality) ---
               if (xrCamera) {
@@ -316,9 +331,6 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
                   quad.geometry.dispose();
                   (quad.material as THREE.Material).dispose();
 
-                  const viewMatrix = view.transform.inverse.matrix as Float32Array;
-                  const projMatrix = view.projectionMatrix as Float32Array;
-                  let colored = 0;
                   snapshotPoints = snapshotPoints.map((pt) => {
                     const pixel = worldToPixel(pt, viewMatrix, projMatrix, camW, camH);
                     if (!pixel) return pt;
@@ -326,47 +338,53 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
                     colored++;
                     return { ...pt, r: allPixels[offset] / 255, g: allPixels[offset + 1] / 255, b: allPixels[offset + 2] / 255 };
                   });
-                  didColor = colored > 0;
-                  console.log(`[Scan] XR camera RGB: ${colored}/${snapshotPoints.length} pts from ${camW}x${camH}`);
+                  status += `XR ${colored}/${snapshotPoints.length} ${camW}x${camH}`;
                 }
               }
 
               // --- Path B: getUserMedia video fallback ---
-              if (!didColor && videoRef.current && videoReadyRef.current) {
+              if (colored === 0) {
                 const video = videoRef.current;
-                const vw = video.videoWidth || 1280;
-                const vh = video.videoHeight || 960;
-                const canvas = document.createElement('canvas');
-                canvas.width = vw;
-                canvas.height = vh;
-                const ctx = canvas.getContext('2d')!;
-                ctx.drawImage(video, 0, 0, vw, vh);
-                const imgData = ctx.getImageData(0, 0, vw, vh);
+                const ready = videoReadyRef.current;
+                const vw = video?.videoWidth ?? 0;
+                const vh = video?.videoHeight ?? 0;
+                const rs = video?.readyState ?? -1;
+                status += `video: ref=${!!video} ready=${ready} rs=${rs} ${vw}x${vh} `;
 
-                const viewMatrix = view.transform.inverse.matrix as Float32Array;
-                const projMatrix = view.projectionMatrix as Float32Array;
-                let colored = 0;
-                snapshotPoints = snapshotPoints.map((pt) => {
-                  const pixel = worldToPixel(pt, viewMatrix, projMatrix, vw, vh);
-                  if (!pixel) return pt;
-                  // Canvas origin = top-left → flip Y
-                  const canvasY = (vh - 1) - pixel.py;
-                  const offset = (canvasY * vw + pixel.px) * 4;
-                  colored++;
-                  return { ...pt, r: imgData.data[offset] / 255, g: imgData.data[offset + 1] / 255, b: imgData.data[offset + 2] / 255 };
-                });
-                didColor = colored > 0;
-                console.log(`[Scan] Video fallback RGB: ${colored}/${snapshotPoints.length} pts from ${vw}x${vh}`);
-              }
+                if (video && ready && vw > 0 && vh > 0) {
+                  const canvas = document.createElement('canvas');
+                  canvas.width = vw;
+                  canvas.height = vh;
+                  const ctx = canvas.getContext('2d')!;
+                  ctx.drawImage(video, 0, 0, vw, vh);
+                  const imgData = ctx.getImageData(0, 0, vw, vh);
 
-              if (!didColor) {
-                console.log('[Scan] No camera source available — using height colors');
+                  // Sample a few pixels to check if video is blank
+                  const mid = ((vh >> 1) * vw + (vw >> 1)) * 4;
+                  const sampleR = imgData.data[mid], sampleG = imgData.data[mid + 1], sampleB = imgData.data[mid + 2];
+                  status += `sample=${sampleR},${sampleG},${sampleB} `;
+
+                  snapshotPoints = snapshotPoints.map((pt) => {
+                    const pixel = worldToPixel(pt, viewMatrix, projMatrix, vw, vh);
+                    if (!pixel) return pt;
+                    // Canvas origin = top-left → flip Y
+                    const canvasY = (vh - 1) - pixel.py;
+                    const offset = (canvasY * vw + pixel.px) * 4;
+                    colored++;
+                    return { ...pt, r: imgData.data[offset] / 255, g: imgData.data[offset + 1] / 255, b: imgData.data[offset + 2] / 255 };
+                  });
+                  status += `colored=${colored}/${snapshotPoints.length}`;
+                } else {
+                  status += 'SKIP';
+                }
               }
             }
           }
-        } catch (err) {
-          console.log('[Scan] Camera color failed:', err);
+        } catch (err: any) {
+          status += `ERR: ${err.message?.substring(0, 50)}`;
         }
+        snapInfoRef.current = status;
+        snapTimeRef.current = Date.now();
       }
 
       onSnapshot(snapshotPoints);
