@@ -100,8 +100,8 @@ interface ColoredPoint {
   r: number; g: number; b: number;
 }
 
-/** Project a 3D world point to camera pixel coords via view + projection matrices. */
-function worldToPixel(
+/** Project a 3D world point to XR camera pixels via view + projection matrices (for camera-access path). */
+function worldToXRPixel(
   pt: { x: number; y: number; z: number },
   viewMatrix: Float32Array,
   projMatrix: Float32Array,
@@ -109,22 +109,54 @@ function worldToPixel(
   height: number,
 ): { px: number; py: number } | null {
   const { x, y, z } = pt;
-  // World → View space (column-major 4x4)
   const vx = viewMatrix[0] * x + viewMatrix[4] * y + viewMatrix[8] * z + viewMatrix[12];
   const vy = viewMatrix[1] * x + viewMatrix[5] * y + viewMatrix[9] * z + viewMatrix[13];
   const vz = viewMatrix[2] * x + viewMatrix[6] * y + viewMatrix[10] * z + viewMatrix[14];
   const vw = viewMatrix[3] * x + viewMatrix[7] * y + viewMatrix[11] * z + viewMatrix[15];
-  // View → Clip space
   const cx = projMatrix[0] * vx + projMatrix[4] * vy + projMatrix[8] * vz + projMatrix[12] * vw;
   const cy = projMatrix[1] * vx + projMatrix[5] * vy + projMatrix[9] * vz + projMatrix[13] * vw;
   const cw = projMatrix[3] * vx + projMatrix[7] * vy + projMatrix[11] * vz + projMatrix[15] * vw;
-  if (cw <= 0) return null; // behind camera
+  if (cw <= 0) return null;
   const ndcX = cx / cw;
   const ndcY = cy / cw;
   if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) return null;
-  // NDC → pixel  (readRenderTargetPixels origin = bottom-left, y-up = NDC y-up)
   const px = Math.min(Math.max(Math.round(((ndcX + 1) / 2) * (width - 1)), 0), width - 1);
   const py = Math.min(Math.max(Math.round(((ndcY + 1) / 2) * (height - 1)), 0), height - 1);
+  return { px, py };
+}
+
+/**
+ * Project a 3D world point to getUserMedia video pixel coords.
+ * Uses direction-based pinhole mapping with estimated camera HFOV,
+ * since the video camera has different optics than the XR view.
+ */
+function worldToVideoPixel(
+  pt: { x: number; y: number; z: number },
+  viewMatrix: Float32Array,
+  videoW: number,
+  videoH: number,
+  cameraHFovDeg: number,
+): { px: number; py: number } | null {
+  const { x, y, z } = pt;
+  // World → viewer-local space
+  const vx = viewMatrix[0] * x + viewMatrix[4] * y + viewMatrix[8] * z + viewMatrix[12];
+  const vy = viewMatrix[1] * x + viewMatrix[5] * y + viewMatrix[9] * z + viewMatrix[13];
+  const vz = viewMatrix[2] * x + viewMatrix[6] * y + viewMatrix[10] * z + viewMatrix[14];
+  if (vz >= 0) return null; // behind viewer
+  // Direction from viewer to point (pinhole model, -Z is forward)
+  const dirX = vx / (-vz); // positive = right
+  const dirY = vy / (-vz); // positive = up
+  // Map direction to normalised image coords using camera FOV
+  const hFov = cameraHFovDeg * Math.PI / 180;
+  const vFov = hFov * (videoH / videoW); // assume square pixels
+  const maxTanH = Math.tan(hFov / 2);
+  const maxTanV = Math.tan(vFov / 2);
+  const nx = dirX / maxTanH; // -1..1
+  const ny = dirY / maxTanV; // -1..1
+  if (nx < -1 || nx > 1 || ny < -1 || ny > 1) return null;
+  // Pixel coords (canvas origin = top-left, Y flipped)
+  const px = Math.min(Math.max(Math.round((nx + 1) / 2 * (videoW - 1)), 0), videoW - 1);
+  const py = Math.min(Math.max(Math.round((1 - ny) / 2 * (videoH - 1)), 0), videoH - 1);
   return { px, py };
 }
 
@@ -268,7 +300,7 @@ function HitTestGrid({ gridSize, useColor, videoRef, onSnapshot, onLiveInfo }: {
             const projMatrix = view.projectionMatrix as Float32Array;
             let colored = 0;
 
-            // --- Path A: WebXR camera-access ---
+            // --- Path A: WebXR camera-access (uses XR projection matrix) ---
             if (xrCamera) {
               const camTexture = (renderer.xr as any).getCameraTexture?.(xrCamera);
               if (camTexture) {
@@ -282,23 +314,23 @@ function HitTestGrid({ gridSize, useColor, videoRef, onSnapshot, onLiveInfo }: {
                 cs.add(q);
                 renderer.setRenderTarget(rt);
                 renderer.render(cs, cc);
-                const px = new Uint8Array(camW * camH * 4);
-                renderer.readRenderTargetPixels(rt, 0, 0, camW, camH, px);
+                const allPx = new Uint8Array(camW * camH * 4);
+                renderer.readRenderTargetPixels(rt, 0, 0, camW, camH, allPx);
                 renderer.setRenderTarget(prevRT);
                 rt.dispose(); q.geometry.dispose(); (q.material as THREE.Material).dispose();
 
                 snapshotPoints = snapshotPoints.map((pt) => {
-                  const p = worldToPixel(pt, viewMatrix, projMatrix, camW, camH);
+                  const p = worldToXRPixel(pt, viewMatrix, projMatrix, camW, camH);
                   if (!p) return pt;
                   const off = (p.py * camW + p.px) * 4;
                   colored++;
-                  return { ...pt, r: px[off] / 255, g: px[off + 1] / 255, b: px[off + 2] / 255 };
+                  return { ...pt, r: allPx[off] / 255, g: allPx[off + 1] / 255, b: allPx[off + 2] / 255 };
                 });
                 status += `XR ${colored}/${snapshotPoints.length}`;
               }
             }
 
-            // --- Path B: getUserMedia video fallback ---
+            // --- Path B: getUserMedia video (uses direction-based pinhole mapping) ---
             if (colored === 0) {
               const video = videoRef.current;
               const vw = video?.videoWidth ?? 0;
@@ -315,15 +347,16 @@ function HitTestGrid({ gridSize, useColor, videoRef, onSnapshot, onLiveInfo }: {
                 const mid = ((vh >> 1) * vw + (vw >> 1)) * 4;
                 status += `rgb=${imgData.data[mid]},${imgData.data[mid + 1]},${imgData.data[mid + 2]} `;
 
+                // Quest passthrough cameras ~90° HFOV typical for getUserMedia
+                const CAM_HFOV = 90;
                 snapshotPoints = snapshotPoints.map((pt) => {
-                  const p = worldToPixel(pt, viewMatrix, projMatrix, vw, vh);
+                  const p = worldToVideoPixel(pt, viewMatrix, vw, vh, CAM_HFOV);
                   if (!p) return pt;
-                  const canvasY = (vh - 1) - p.py;
-                  const off = (canvasY * vw + p.px) * 4;
+                  const off = (p.py * vw + p.px) * 4;
                   colored++;
                   return { ...pt, r: imgData.data[off] / 255, g: imgData.data[off + 1] / 255, b: imgData.data[off + 2] / 255 };
                 });
-                status += `c=${colored}/${snapshotPoints.length}`;
+                status += `c=${colored}/${snapshotPoints.length} fov=${CAM_HFOV}`;
               } else {
                 status += 'SKIP';
               }
