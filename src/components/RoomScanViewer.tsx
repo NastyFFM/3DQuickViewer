@@ -336,7 +336,11 @@ function HitTestGrid({ gridSize, useColor, videoRef, onSnapshot, onLiveInfo }: {
               const vw = video?.videoWidth ?? 0;
               const vh = video?.videoHeight ?? 0;
               const rs = video?.readyState ?? -1;
-              status += `vid:${!!video} ${vw}x${vh} rs=${rs} `;
+              const ct = video?.currentTime?.toFixed(2) ?? '?';
+              const paused = video?.paused ?? true;
+              // Try to resume video if paused (XR session may have paused it)
+              if (video && video.paused) { try { video.play(); } catch {} }
+              status += `vid:${vw}x${vh} rs=${rs} t=${ct} p=${paused} `;
 
               if (video && vw > 0 && vh > 0 && rs >= 2) {
                 const canvas = document.createElement('canvas');
@@ -356,7 +360,7 @@ function HitTestGrid({ gridSize, useColor, videoRef, onSnapshot, onLiveInfo }: {
                   colored++;
                   return { ...pt, r: imgData.data[off] / 255, g: imgData.data[off + 1] / 255, b: imgData.data[off + 2] / 255 };
                 });
-                status += `c=${colored}/${snapshotPoints.length} fov=${CAM_HFOV}`;
+                status += `c=${colored}/${snapshotPoints.length}`;
               } else {
                 status += 'SKIP';
               }
