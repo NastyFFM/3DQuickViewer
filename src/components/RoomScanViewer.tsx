@@ -157,6 +157,10 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
   const snapInfoRef = useRef('');
   const snapTimeRef = useRef(0);
 
+  // Pending snapshot flag — selectstart sets this, useFrame processes it
+  // (camera/frame access only works inside the XR animation frame)
+  const pendingSnapshotRef = useRef(false);
+
   useEffect(() => {
     if (!useColor) return;
     let cancelled = false;
@@ -278,6 +282,96 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
       const hasVideo = videoReadyRef.current;
       camStatus = hasViewCam ? ' 📷XR' : hasVideo ? ' 📷Video' : ' 📷✗';
     }
+    // --- Process pending snapshot (color sampling must happen inside animation frame) ---
+    if (pendingSnapshotRef.current && currentPoints.length > 0) {
+      pendingSnapshotRef.current = false;
+      let snapshotPoints = [...currentPoints];
+      let status = 'snap: ';
+
+      if (useColorRef.current) {
+        try {
+          const viewerPose = frame.getViewerPose(refSpace);
+          if (viewerPose?.views?.length) {
+            const view = viewerPose.views[0];
+            const xrCamera = (view as any).camera;
+            const viewMatrix = view.transform.inverse.matrix as Float32Array;
+            const projMatrix = view.projectionMatrix as Float32Array;
+            let colored = 0;
+
+            // --- Path A: WebXR camera-access ---
+            if (xrCamera) {
+              const camTexture = (renderer.xr as any).getCameraTexture?.(xrCamera);
+              if (camTexture) {
+                const camW: number = xrCamera.width || 1280;
+                const camH: number = xrCamera.height || 960;
+                const rt = new THREE.WebGLRenderTarget(camW, camH);
+                const prevRT = renderer.getRenderTarget();
+                const cs = new THREE.Scene();
+                const cc = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+                const q = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map: camTexture }));
+                cs.add(q);
+                renderer.setRenderTarget(rt);
+                renderer.render(cs, cc);
+                const px = new Uint8Array(camW * camH * 4);
+                renderer.readRenderTargetPixels(rt, 0, 0, camW, camH, px);
+                renderer.setRenderTarget(prevRT);
+                rt.dispose(); q.geometry.dispose(); (q.material as THREE.Material).dispose();
+
+                snapshotPoints = snapshotPoints.map((pt) => {
+                  const p = worldToPixel(pt, viewMatrix, projMatrix, camW, camH);
+                  if (!p) return pt;
+                  const off = (p.py * camW + p.px) * 4;
+                  colored++;
+                  return { ...pt, r: px[off] / 255, g: px[off + 1] / 255, b: px[off + 2] / 255 };
+                });
+                status += `XR ${colored}/${snapshotPoints.length}`;
+              }
+            }
+
+            // --- Path B: getUserMedia video fallback ---
+            if (colored === 0) {
+              const video = videoRef.current;
+              const vw = video?.videoWidth ?? 0;
+              const vh = video?.videoHeight ?? 0;
+              status += `vid:${!!video} ${vw}x${vh} rs=${video?.readyState ?? -1} `;
+
+              if (video && vw > 0 && vh > 0 && video.readyState >= 2) {
+                const canvas = document.createElement('canvas');
+                canvas.width = vw; canvas.height = vh;
+                const ctx = canvas.getContext('2d')!;
+                ctx.drawImage(video, 0, 0, vw, vh);
+                const imgData = ctx.getImageData(0, 0, vw, vh);
+                const mid = ((vh >> 1) * vw + (vw >> 1)) * 4;
+                status += `rgb=${imgData.data[mid]},${imgData.data[mid + 1]},${imgData.data[mid + 2]} `;
+
+                snapshotPoints = snapshotPoints.map((pt) => {
+                  const p = worldToPixel(pt, viewMatrix, projMatrix, vw, vh);
+                  if (!p) return pt;
+                  const canvasY = (vh - 1) - p.py;
+                  const off = (canvasY * vw + p.px) * 4;
+                  colored++;
+                  return { ...pt, r: imgData.data[off] / 255, g: imgData.data[off + 1] / 255, b: imgData.data[off + 2] / 255 };
+                });
+                status += `c=${colored}/${snapshotPoints.length}`;
+              } else {
+                status += 'SKIP';
+              }
+            }
+          } else {
+            status += 'no pose';
+          }
+        } catch (err: any) {
+          status += `ERR:${err.message?.substring(0, 40)}`;
+        }
+      } else {
+        status += 'color off';
+      }
+
+      snapInfoRef.current = status;
+      snapTimeRef.current = Date.now();
+      onSnapshot(snapshotPoints);
+    }
+
     const snapAge = Date.now() - snapTimeRef.current;
     const snapInfo = snapAge < 8000 && snapInfoRef.current ? ` · ${snapInfoRef.current}` : '';
     onLiveInfo(`Live: ${currentPoints.length}/${gridSize * gridSize} Hits${camStatus}${snapInfo}`);
@@ -286,108 +380,9 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
   useEffect(() => {
     const renderer = gl as THREE.WebGLRenderer;
     const onSelectStart = () => {
-      if (livePointsRef.current.length === 0) return;
-
-      let snapshotPoints = [...livePointsRef.current];
-
-      // If color mode, try camera-access first, then getUserMedia video fallback
-      if (useColorRef.current) {
-        let status = 'color: ';
-        try {
-          const frame = (renderer.xr as any).getFrame?.() as XRFrame | null;
-          const refSpace = renderer.xr.getReferenceSpace();
-          if (!frame || !refSpace) { status += 'no frame/ref'; }
-          else {
-            const viewerPose = frame.getViewerPose(refSpace);
-            if (!viewerPose?.views?.length) { status += 'no pose'; }
-            else {
-              const view = viewerPose.views[0];
-              const xrCamera = (view as any).camera;
-              const viewMatrix = view.transform.inverse.matrix as Float32Array;
-              const projMatrix = view.projectionMatrix as Float32Array;
-              let colored = 0;
-
-              // --- Path A: WebXR camera-access (best quality) ---
-              if (xrCamera) {
-                const camTexture = (renderer.xr as any).getCameraTexture?.(xrCamera);
-                if (camTexture) {
-                  const camW: number = xrCamera.width || 1280;
-                  const camH: number = xrCamera.height || 960;
-                  const rt = new THREE.WebGLRenderTarget(camW, camH);
-                  const prevRT = renderer.getRenderTarget();
-                  const copyScene = new THREE.Scene();
-                  const copyCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-                  const quad = new THREE.Mesh(
-                    new THREE.PlaneGeometry(2, 2),
-                    new THREE.MeshBasicMaterial({ map: camTexture }),
-                  );
-                  copyScene.add(quad);
-                  renderer.setRenderTarget(rt);
-                  renderer.render(copyScene, copyCam);
-                  const allPixels = new Uint8Array(camW * camH * 4);
-                  renderer.readRenderTargetPixels(rt, 0, 0, camW, camH, allPixels);
-                  renderer.setRenderTarget(prevRT);
-                  rt.dispose();
-                  quad.geometry.dispose();
-                  (quad.material as THREE.Material).dispose();
-
-                  snapshotPoints = snapshotPoints.map((pt) => {
-                    const pixel = worldToPixel(pt, viewMatrix, projMatrix, camW, camH);
-                    if (!pixel) return pt;
-                    const offset = (pixel.py * camW + pixel.px) * 4;
-                    colored++;
-                    return { ...pt, r: allPixels[offset] / 255, g: allPixels[offset + 1] / 255, b: allPixels[offset + 2] / 255 };
-                  });
-                  status += `XR ${colored}/${snapshotPoints.length} ${camW}x${camH}`;
-                }
-              }
-
-              // --- Path B: getUserMedia video fallback ---
-              if (colored === 0) {
-                const video = videoRef.current;
-                const ready = videoReadyRef.current;
-                const vw = video?.videoWidth ?? 0;
-                const vh = video?.videoHeight ?? 0;
-                const rs = video?.readyState ?? -1;
-                status += `video: ref=${!!video} ready=${ready} rs=${rs} ${vw}x${vh} `;
-
-                if (video && ready && vw > 0 && vh > 0) {
-                  const canvas = document.createElement('canvas');
-                  canvas.width = vw;
-                  canvas.height = vh;
-                  const ctx = canvas.getContext('2d')!;
-                  ctx.drawImage(video, 0, 0, vw, vh);
-                  const imgData = ctx.getImageData(0, 0, vw, vh);
-
-                  // Sample a few pixels to check if video is blank
-                  const mid = ((vh >> 1) * vw + (vw >> 1)) * 4;
-                  const sampleR = imgData.data[mid], sampleG = imgData.data[mid + 1], sampleB = imgData.data[mid + 2];
-                  status += `sample=${sampleR},${sampleG},${sampleB} `;
-
-                  snapshotPoints = snapshotPoints.map((pt) => {
-                    const pixel = worldToPixel(pt, viewMatrix, projMatrix, vw, vh);
-                    if (!pixel) return pt;
-                    // Canvas origin = top-left → flip Y
-                    const canvasY = (vh - 1) - pixel.py;
-                    const offset = (canvasY * vw + pixel.px) * 4;
-                    colored++;
-                    return { ...pt, r: imgData.data[offset] / 255, g: imgData.data[offset + 1] / 255, b: imgData.data[offset + 2] / 255 };
-                  });
-                  status += `colored=${colored}/${snapshotPoints.length}`;
-                } else {
-                  status += 'SKIP';
-                }
-              }
-            }
-          }
-        } catch (err: any) {
-          status += `ERR: ${err.message?.substring(0, 50)}`;
-        }
-        snapInfoRef.current = status;
-        snapTimeRef.current = Date.now();
-      }
-
-      onSnapshot(snapshotPoints);
+      // Just set the flag — color sampling happens in useFrame
+      // where XR frame/camera data is available
+      pendingSnapshotRef.current = true;
     };
     const c0 = renderer.xr.getController(0);
     const c1 = renderer.xr.getController(1);
@@ -399,7 +394,7 @@ function HitTestGrid({ gridSize, useColor, onSnapshot, onLiveInfo }: {
       c1.removeEventListener('selectstart', onSelectStart);
       scene.remove(c0); scene.remove(c1);
     };
-  }, [gl, scene, onSnapshot]);
+  }, [gl, scene]);
 
   return null;
 }
