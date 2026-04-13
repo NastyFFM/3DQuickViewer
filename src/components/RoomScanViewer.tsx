@@ -16,7 +16,7 @@ const store = createXRStore({
 // so we patch requestSession to append camera-access as optional instead.
 if (typeof navigator !== 'undefined' && navigator.xr) {
   const _origRequestSession = navigator.xr.requestSession.bind(navigator.xr);
-  (navigator.xr as any).requestSession = (mode: string, init?: any) => {
+  (navigator.xr as any).requestSession = (mode: XRSessionMode, init?: any) => {
     if (mode === 'immersive-ar') {
       init = init || {};
       init.optionalFeatures = [...(init.optionalFeatures || []), 'camera-access'];
