@@ -130,7 +130,7 @@ export function Room() {
             }}>
               <button onClick={() => { setViewing(null); setViewMode('3d'); }} style={{ ...backBtnStyle, padding: '8px 14px', fontSize: 14 }}>Zurueck</button>
               <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 10, padding: 3 }}>
-                {isGlb && <button onClick={() => setViewMode('ar')} style={viewMode === 'ar' ? xrTabActive : xrTab}>AR</button>}
+                {isGlb && <button onClick={() => setViewMode('ar')} style={xrTab}>AR</button>}
                 <button onClick={() => setViewMode('xr')} style={viewMode === 'xr' ? xrTabActive : xrTab}>XR</button>
                 <button onClick={() => setViewMode('vr')} style={viewMode === 'vr' ? xrTabActive : xrTab}>VR</button>
               </div>
@@ -203,8 +203,8 @@ export function Room() {
               <div style={{ display: 'flex', gap: 2, background: 'rgba(255,255,255,0.06)', borderRadius: 10, padding: 3, flexShrink: 0 }}>
                 <button onClick={() => setViewMode('3d')} style={viewMode === '3d' ? tabActiveStyle : tabStyle}>3D</button>
                 {isGlb && <button onClick={() => setViewMode('ar')} style={viewMode === 'ar' ? tabActiveStyle : tabStyle}>AR</button>}
-                <button onClick={() => setViewMode('xr')} style={viewMode === 'xr' ? tabActiveStyle : tabStyle}>XR</button>
-                <button onClick={() => setViewMode('vr')} style={viewMode === 'vr' ? tabActiveStyle : tabStyle}>VR</button>
+                <button onClick={() => setViewMode('xr')} style={tabStyle}>XR</button>
+                <button onClick={() => setViewMode('vr')} style={tabStyle}>VR</button>
               </div>
             </div>
             <div style={{ flex: 1, minHeight: 0 }}>
