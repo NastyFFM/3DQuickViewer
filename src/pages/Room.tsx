@@ -201,11 +201,33 @@ export function Room() {
                 <button onClick={() => setViewMode('vr')} style={tabStyle}>VR</button>
               </div>
             </div>
-            <div style={{ flex: 1, minHeight: 0 }}>
+            <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
                 {viewMode === '3d' && <ModelViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />}
                 {viewMode === 'ar' && <ARViewer modelData={viewing.data} fileName={viewing.fileName} />}
               </ViewerErrorBoundary>
+              {/* Big XR button overlaid on the 3D viewer */}
+              <button
+                onClick={() => setViewMode('xr')}
+                style={{
+                  position: 'absolute',
+                  bottom: 24,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  background: '#6c63ff',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 14,
+                  padding: '16px 36px',
+                  fontSize: 20,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 24px rgba(108,99,255,0.4)',
+                  zIndex: 5,
+                }}
+              >
+                🥽 In XR ansehen
+              </button>
             </div>
           </>
         )}
