@@ -119,70 +119,114 @@ export function Room() {
 
     return (
       <div style={{ width: '100vw', height: '100vh', background: '#0d0d1a', display: 'flex', flexDirection: 'column' }}>
-        {/* Header with tabs + scale */}
-        <div style={{ padding: '6px 12px', display: 'flex', gap: 6, alignItems: 'center', borderBottom: '1px solid #222', flexWrap: 'wrap' }}>
-          <button onClick={() => { setViewing(null); setViewMode('3d'); }} style={backBtnStyle}>Zurueck</button>
-          <h2 style={{ color: '#fff', margin: 0, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '1 1 auto' }}>{viewing.name}</h2>
 
-          {/* Scale slider */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-            <span style={{ color: '#888', fontSize: 11 }}>{modelScale}%</span>
-            <input type="range" min={50} max={200} value={modelScale}
-              onChange={(e) => setModelScale(Number(e.target.value))}
-              style={{ width: 60, accentColor: '#6c63ff' }} />
-          </div>
-
-          {/* View mode tabs */}
-          <div style={{ display: 'flex', gap: 2, background: 'rgba(255,255,255,0.06)', borderRadius: 10, padding: 3, flexShrink: 0 }}>
-            <button onClick={() => setViewMode('3d')} style={viewMode === '3d' ? tabActiveStyle : tabStyle}>3D</button>
-            {isGlb && <button onClick={() => setViewMode('ar')} style={viewMode === 'ar' ? tabActiveStyle : tabStyle}>AR</button>}
-            <button onClick={() => setViewMode('xr')} style={viewMode === 'xr' ? tabActiveStyle : tabStyle}>XR</button>
-            <button onClick={() => setViewMode('vr')} style={viewMode === 'vr' ? tabActiveStyle : tabStyle}>VR</button>
-          </div>
-        </div>
-
-        {/* Viewer */}
-        <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
-            {viewMode === '3d' && (
-              <ModelViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />
-            )}
-            {viewMode === 'ar' && (
-              <ARViewer modelData={viewing.data} fileName={viewing.fileName} />
-            )}
-            {viewMode === 'xr' && (
-              <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />
-            )}
-            {viewMode === 'vr' && (
-              <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />
-            )}
-          </ViewerErrorBoundary>
-
-          {/* In XR/VR mode: floating gallery panel to swap models */}
-          {isXR && models.length > 1 && (
-            <div style={{
-              position: 'absolute', bottom: 8, left: 8, right: 8, zIndex: 10,
-              background: 'rgba(0,0,0,0.85)', borderRadius: 12, padding: '8px 12px',
-              display: 'flex', gap: 8, overflowX: 'auto', pointerEvents: 'auto',
-            }}>
-              {models.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => setViewing(m)}
-                  style={{
-                    background: m.id === viewing.id ? '#6c63ff' : 'rgba(255,255,255,0.1)',
-                    color: '#fff', border: 'none', borderRadius: 8,
-                    padding: '6px 12px', fontSize: 12, cursor: 'pointer',
-                    whiteSpace: 'nowrap', fontWeight: m.id === viewing.id ? 700 : 400,
-                    flexShrink: 0,
-                  }}
-                >
-                  {m.name}
-                </button>
-              ))}
+        {/* ===== XR MODE: Full-screen UI ===== */}
+        {isXR ? (
+          <>
+            {/* XR Viewer takes full screen */}
+            <div style={{ position: 'fixed', inset: 0, zIndex: 0 }}>
+              <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
+                {viewMode === 'xr' && (
+                  <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />
+                )}
+                {viewMode === 'vr' && (
+                  <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />
+                )}
+              </ViewerErrorBoundary>
             </div>
-          )}
-        </div>
+
+            {/* XR Overlay UI — full screen, big controls */}
+            <div style={{ position: 'fixed', inset: 0, zIndex: 10, display: 'flex', flexDirection: 'column', pointerEvents: 'none' }}>
+
+              {/* Top bar: current model + mode tabs */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px',
+                background: 'rgba(0,0,0,0.7)', pointerEvents: 'auto',
+              }}>
+                <button onClick={() => { setViewing(null); setViewMode('3d'); }} style={{ ...backBtnStyle, padding: '10px 16px', fontSize: 15 }}>Zurueck</button>
+                <h2 style={{ color: '#fff', margin: 0, fontSize: 18, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {viewing.name}
+                </h2>
+                <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 4 }}>
+                  {isGlb && <button onClick={() => setViewMode('ar')} style={viewMode === 'ar' ? xrTabActive : xrTab}>AR</button>}
+                  <button onClick={() => setViewMode('xr')} style={viewMode === 'xr' ? xrTabActive : xrTab}>XR</button>
+                  <button onClick={() => setViewMode('vr')} style={viewMode === 'vr' ? xrTabActive : xrTab}>VR</button>
+                </div>
+              </div>
+
+              {/* Spacer */}
+              <div style={{ flex: 1 }} />
+
+              {/* Bottom panel: Scale + Model gallery */}
+              <div style={{ background: 'rgba(0,0,0,0.75)', pointerEvents: 'auto', padding: '16px 20px' }}>
+
+                {/* Scale slider — big */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                  <span style={{ color: '#fff', fontSize: 18, fontWeight: 700, minWidth: 55 }}>{modelScale}%</span>
+                  <input type="range" min={50} max={200} value={modelScale}
+                    onChange={(e) => setModelScale(Number(e.target.value))}
+                    style={{ flex: 1, height: 8, accentColor: '#6c63ff' }} />
+                </div>
+
+                {/* Model gallery — big buttons, scrollable */}
+                {models.length > 0 && (
+                  <div style={{
+                    display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4,
+                  }}>
+                    {models.map((m) => (
+                      <button
+                        key={m.id}
+                        onClick={() => setViewing(m)}
+                        style={{
+                          background: m.id === viewing.id ? '#6c63ff' : 'rgba(255,255,255,0.12)',
+                          color: '#fff',
+                          border: m.id === viewing.id ? '2px solid #9c8fff' : '2px solid transparent',
+                          borderRadius: 12,
+                          padding: '12px 20px',
+                          fontSize: 16,
+                          fontWeight: m.id === viewing.id ? 700 : 500,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0,
+                          minWidth: 120,
+                          textAlign: 'center',
+                        }}
+                      >
+                        🧊 {m.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        ) : (
+          /* ===== NON-XR MODE: Normal layout ===== */
+          <>
+            <div style={{ padding: '6px 12px', display: 'flex', gap: 6, alignItems: 'center', borderBottom: '1px solid #222', flexWrap: 'wrap' }}>
+              <button onClick={() => { setViewing(null); setViewMode('3d'); }} style={backBtnStyle}>Zurueck</button>
+              <h2 style={{ color: '#fff', margin: 0, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '1 1 auto' }}>{viewing.name}</h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                <span style={{ color: '#888', fontSize: 11 }}>{modelScale}%</span>
+                <input type="range" min={50} max={200} value={modelScale}
+                  onChange={(e) => setModelScale(Number(e.target.value))}
+                  style={{ width: 60, accentColor: '#6c63ff' }} />
+              </div>
+              <div style={{ display: 'flex', gap: 2, background: 'rgba(255,255,255,0.06)', borderRadius: 10, padding: 3, flexShrink: 0 }}>
+                <button onClick={() => setViewMode('3d')} style={viewMode === '3d' ? tabActiveStyle : tabStyle}>3D</button>
+                {isGlb && <button onClick={() => setViewMode('ar')} style={viewMode === 'ar' ? tabActiveStyle : tabStyle}>AR</button>}
+                <button onClick={() => setViewMode('xr')} style={viewMode === 'xr' ? tabActiveStyle : tabStyle}>XR</button>
+                <button onClick={() => setViewMode('vr')} style={viewMode === 'vr' ? tabActiveStyle : tabStyle}>VR</button>
+              </div>
+            </div>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
+                {viewMode === '3d' && <ModelViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />}
+                {viewMode === 'ar' && <ARViewer modelData={viewing.data} fileName={viewing.fileName} />}
+              </ViewerErrorBoundary>
+            </div>
+          </>
+        )}
       </div>
     );
   }
@@ -320,6 +364,24 @@ const tabStyle: React.CSSProperties = {
 
 const tabActiveStyle: React.CSSProperties = {
   ...tabStyle,
+  background: '#6c63ff',
+  color: '#fff',
+};
+
+// XR mode tabs — bigger for headset use
+const xrTab: React.CSSProperties = {
+  padding: '10px 18px',
+  background: 'transparent',
+  color: '#aaa',
+  border: 'none',
+  borderRadius: 10,
+  fontSize: 16,
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const xrTabActive: React.CSSProperties = {
+  ...xrTab,
   background: '#6c63ff',
   color: '#fff',
 };
