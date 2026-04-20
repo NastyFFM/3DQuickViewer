@@ -15,6 +15,7 @@ interface XRViewerProps {
   modelData: ArrayBuffer;
   fileName: string;
   scale?: number;
+  autoEnter?: boolean;
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -130,14 +131,19 @@ function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBu
   );
 }
 
-export function XRViewer({ modelData, fileName, scale = 1 }: XRViewerProps) {
+export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false }: XRViewerProps) {
   const [xrSupported, setXrSupported] = useState(false);
 
   useEffect(() => {
     if (navigator.xr) {
-      navigator.xr.isSessionSupported('immersive-ar').then(setXrSupported);
+      navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+        setXrSupported(supported);
+        if (supported && autoEnter) {
+          store.enterAR();
+        }
+      });
     }
-  }, []);
+  }, [autoEnter]);
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#1a1a2e' }}>

@@ -139,7 +139,7 @@ export function Room() {
             {/* Canvas hidden but stays in DOM so XR session keeps running */}
             <div style={{ height: 1, overflow: 'hidden', opacity: 0 }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
-                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />}
+                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter />}
                 {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />}
               </ViewerErrorBoundary>
             </div>
