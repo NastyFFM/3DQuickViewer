@@ -34,7 +34,7 @@ function centerAndScale(object: THREE.Object3D) {
  * - On selectstart: raycast, if hit → controller.attach(object) (6DOF parent)
  * - On selectend: scene.attach(object) (detach, keep world transform)
  */
-function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: string }) {
+function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBuffer; fileName: string; scale?: number }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const groupRef = useRef<THREE.Group>(null);
   const { gl, scene } = useThree();
@@ -130,7 +130,9 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
 
   return (
     <group ref={groupRef} position={[0, 1.2, -1.5]}>
-      <primitive object={object} />
+      <group scale={[scale, scale, scale]}>
+        <primitive object={object} />
+      </group>
     </group>
   );
 }
@@ -189,9 +191,7 @@ export function VRScene({ modelData, fileName, scale = 1 }: VRSceneProps) {
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
           <XROrigin />
-          <group scale={[scale, scale, scale]}>
-            <GrabbableModel modelData={modelData} fileName={fileName} />
-          </group>
+          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} />
           <Floor />
           <GridFloor />
           <Environment preset="city" />

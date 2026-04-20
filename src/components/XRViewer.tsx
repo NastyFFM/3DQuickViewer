@@ -32,7 +32,7 @@ function centerAndScale(object: THREE.Object3D) {
  * Model appears in front of the user in the real world.
  * No floor/grid — you see the real environment through the camera.
  */
-function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileName: string }) {
+function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBuffer; fileName: string; scale?: number }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const groupRef = useRef<THREE.Group>(null);
   const { gl, scene } = useThree();
@@ -123,7 +123,9 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
   // Spawn in front of user, slightly below eye level
   return (
     <group ref={groupRef} position={[0, 0.8, -1]}>
-      <primitive object={object} />
+      <group scale={[scale, scale, scale]}>
+        <primitive object={object} />
+      </group>
     </group>
   );
 }
@@ -191,9 +193,7 @@ export function XRViewer({ modelData, fileName, scale = 1 }: XRViewerProps) {
           <ambientLight intensity={1} />
           <directionalLight position={[5, 5, 5]} intensity={1.5} />
           <XROrigin />
-          <group scale={[scale, scale, scale]}>
-            <GrabbableModel modelData={modelData} fileName={fileName} />
-          </group>
+          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} />
         </XR>
       </Canvas>
     </div>
