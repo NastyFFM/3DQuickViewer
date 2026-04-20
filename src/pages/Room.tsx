@@ -120,37 +120,31 @@ export function Room() {
     return (
       <div style={{ width: '100vw', height: '100vh', background: '#0d0d1a', display: 'flex', flexDirection: 'column' }}>
 
-        {/* ===== XR MODE: small canvas + big gallery ===== */}
+        {/* ===== XR MODE: hidden canvas + full gallery ===== */}
         {isXR ? (
           <>
-            {/* Top bar */}
+            {/* Top bar: scale slider only */}
             <div style={{
               display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px',
               background: '#111', borderBottom: '1px solid #333',
             }}>
               <button onClick={() => { setViewing(null); setViewMode('3d'); }} style={{ ...backBtnStyle, padding: '8px 14px', fontSize: 14 }}>Zurueck</button>
-              <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 10, padding: 3 }}>
-                {isGlb && <button onClick={() => setViewMode('ar')} style={xrTab}>AR</button>}
-                <button onClick={() => setViewMode('xr')} style={viewMode === 'xr' ? xrTabActive : xrTab}>XR</button>
-                <button onClick={() => setViewMode('vr')} style={viewMode === 'vr' ? xrTabActive : xrTab}>VR</button>
-              </div>
               <div style={{ flex: 1 }} />
-              {/* Scale slider */}
               <span style={{ color: '#fff', fontSize: 16, fontWeight: 700 }}>{modelScale}%</span>
               <input type="range" min={50} max={200} value={modelScale}
                 onChange={(e) => setModelScale(Number(e.target.value))}
                 style={{ width: 140, accentColor: '#6c63ff' }} />
             </div>
 
-            {/* Small canvas strip */}
-            <div style={{ height: '25vh', minHeight: 120, background: '#000' }}>
+            {/* Canvas hidden but stays in DOM so XR session keeps running */}
+            <div style={{ height: 1, overflow: 'hidden', opacity: 0 }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
                 {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />}
                 {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />}
               </ViewerErrorBoundary>
             </div>
 
-            {/* Big model gallery — grid of cards, takes remaining space */}
+            {/* Full-screen model gallery */}
             <div style={{ flex: 1, overflow: 'auto', padding: 16, background: '#0d0d1a' }}>
               <div style={{
                 display: 'grid',
