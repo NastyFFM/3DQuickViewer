@@ -14,6 +14,7 @@ interface UseRoomReturn {
   peers: string[];
   remoteModels: ModelMeta[];
   transfers: TransferProgress[];
+  lastReceived: number;
   requestModel: (modelId: string) => void;
   sendModelToPeers: (modelId: string) => Promise<void>;
   broadcastModelList: () => Promise<void>;
