@@ -350,21 +350,4 @@ const tabActiveStyle: React.CSSProperties = {
   color: '#fff',
 };
 
-// XR mode tabs — bigger for headset use
-const xrTab: React.CSSProperties = {
-  padding: '10px 18px',
-  background: 'transparent',
-  color: '#aaa',
-  border: 'none',
-  borderRadius: 10,
-  fontSize: 16,
-  fontWeight: 600,
-  cursor: 'pointer',
-};
-
-const xrTabActive: React.CSSProperties = {
-  ...xrTab,
-  background: '#6c63ff',
-  color: '#fff',
-};
 
