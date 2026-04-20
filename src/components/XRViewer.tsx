@@ -14,6 +14,7 @@ const store = createXRStore({
 interface XRViewerProps {
   modelData: ArrayBuffer;
   fileName: string;
+  scale?: number;
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -127,7 +128,7 @@ function GrabbableModel({ modelData, fileName }: { modelData: ArrayBuffer; fileN
   );
 }
 
-export function XRViewer({ modelData, fileName }: XRViewerProps) {
+export function XRViewer({ modelData, fileName, scale = 1 }: XRViewerProps) {
   const [xrSupported, setXrSupported] = useState(false);
 
   useEffect(() => {
@@ -190,7 +191,9 @@ export function XRViewer({ modelData, fileName }: XRViewerProps) {
           <ambientLight intensity={1} />
           <directionalLight position={[5, 5, 5]} intensity={1.5} />
           <XROrigin />
-          <GrabbableModel modelData={modelData} fileName={fileName} />
+          <group scale={[scale, scale, scale]}>
+            <GrabbableModel modelData={modelData} fileName={fileName} />
+          </group>
         </XR>
       </Canvas>
     </div>

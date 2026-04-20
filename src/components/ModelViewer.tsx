@@ -10,6 +10,7 @@ interface ModelViewerProps {
   modelData: ArrayBuffer;
   fileName: string;
   autoRotate?: boolean;
+  scale?: number;
   style?: React.CSSProperties;
 }
 
@@ -62,13 +63,15 @@ function centerAndScale(object: THREE.Object3D) {
   object.scale.multiplyScalar(scale);
 }
 
-export function ModelViewer({ modelData, fileName, autoRotate = true, style }: ModelViewerProps) {
+export function ModelViewer({ modelData, fileName, autoRotate = true, scale = 1, style }: ModelViewerProps) {
   return (
     <div style={{ width: '100%', height: '100%', background: '#1a1a2e', borderRadius: 12, overflow: 'hidden', ...style }}>
       <Canvas camera={{ position: [0, 1, 3], fov: 50 }}>
         <ambientLight intensity={0.5} />
         <directionalLight position={[5, 5, 5]} intensity={1} />
-        <LoadedModel modelData={modelData} fileName={fileName} />
+        <group scale={[scale, scale, scale]}>
+          <LoadedModel modelData={modelData} fileName={fileName} />
+        </group>
         <ContactShadows position={[0, -1, 0]} opacity={0.4} blur={2} />
         <OrbitControls autoRotate={autoRotate} autoRotateSpeed={1} />
         <Environment preset="city" />

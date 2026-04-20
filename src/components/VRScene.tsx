@@ -15,6 +15,7 @@ const store = createXRStore({
 interface VRSceneProps {
   modelData: ArrayBuffer;
   fileName: string;
+  scale?: number;
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -149,7 +150,7 @@ function GridFloor() {
   );
 }
 
-export function VRScene({ modelData, fileName }: VRSceneProps) {
+export function VRScene({ modelData, fileName, scale = 1 }: VRSceneProps) {
   const [vrSupported, setVrSupported] = useState(false);
 
   useEffect(() => {
@@ -188,7 +189,9 @@ export function VRScene({ modelData, fileName }: VRSceneProps) {
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
           <XROrigin />
-          <GrabbableModel modelData={modelData} fileName={fileName} />
+          <group scale={[scale, scale, scale]}>
+            <GrabbableModel modelData={modelData} fileName={fileName} />
+          </group>
           <Floor />
           <GridFloor />
           <Environment preset="city" />
