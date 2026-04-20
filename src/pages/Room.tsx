@@ -35,6 +35,7 @@ export function Room() {
     peers,
     remoteModels,
     transfers,
+    lastReceived,
     requestModel,
     sendModelToPeers,
     broadcastModelList,
@@ -72,19 +73,16 @@ export function Room() {
     URL.revokeObjectURL(url);
   }, []);
 
-  // Refresh models when a transfer completes (transfers array shrinks)
-  const [prevTransferCount, setPrevTransferCount] = useState(0);
+  // Refresh models immediately when a model is received via P2P
   useEffect(() => {
-    if (transfers.length < prevTransferCount && prevTransferCount > 0) {
-      // A transfer just completed — refresh immediately
+    if (lastReceived > 0) {
       refresh();
     }
-    setPrevTransferCount(transfers.length);
-  }, [transfers.length, prevTransferCount, refresh]);
+  }, [lastReceived, refresh]);
 
-  // Also refresh periodically (to catch newly received ones)
+  // Also refresh periodically as fallback
   useEffect(() => {
-    const interval = setInterval(refresh, 2000);
+    const interval = setInterval(refresh, 3000);
     return () => clearInterval(interval);
   }, [refresh]);
 

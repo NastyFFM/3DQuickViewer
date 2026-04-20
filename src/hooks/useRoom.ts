@@ -29,8 +29,7 @@ export function useRoom({ roomId, isHost, enabled = true }: UseRoomOptions): Use
   const peerRef = useRef<RoomPeer | null>(null);
   const onModelReceivedRef = useRef<((model: StoredModel) => void) | null>(null);
 
-  // Expose a way for the page to know when a model is received
-  const [, setLastReceived] = useState<number>(0);
+  const [lastReceived, setLastReceived] = useState<number>(0);
 
   useEffect(() => {
     if (!enabled || !roomId) return;
@@ -119,6 +118,7 @@ export function useRoom({ roomId, isHost, enabled = true }: UseRoomOptions): Use
     peers,
     remoteModels,
     transfers,
+    lastReceived,
     requestModel,
     sendModelToPeers,
     broadcastModelList,
