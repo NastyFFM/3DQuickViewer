@@ -3,8 +3,7 @@ import type { PeerMessage, ModelMeta, ModelChunk, StoredModel } from '../types';
 import { getModel, getAllModels, saveModel } from './storage';
 
 const SIGNALING_SERVER = 'https://web-production-84380f.up.railway.app';
-const CHUNK_SIZE = 64 * 1024; // 64KB chunks (safe for all browsers)
-const MAX_BUFFERED = 256 * 1024; // Wait when buffer exceeds 256KB
+const CHUNK_SIZE = 16 * 1024; // 16KB chunks — small and safe
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 type OnModelList = (models: ModelMeta[]) => void;
@@ -192,15 +191,19 @@ export class RoomPeer {
     };
   }
 
-  // Wait until the DataChannel buffer drains below threshold
-  private async waitForBuffer(channel: RTCDataChannel): Promise<void> {
-    let waited = 0;
-    while (channel.bufferedAmount > MAX_BUFFERED && waited < 30000) {
-      await new Promise((r) => setTimeout(r, 100));
-      waited += 100;
-    }
-    if (waited >= 30000) {
-      console.warn('[3DQV] Buffer drain timeout after 30s, continuing anyway');
+  private async drainBuffer(channel: RTCDataChannel): Promise<void> {
+    // Simple: wait until bufferedAmount is low, with timeout
+    if (channel.bufferedAmount > 64 * 1024) {
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (channel.bufferedAmount < 32 * 1024 || channel.readyState !== 'open') {
+            resolve();
+          } else {
+            setTimeout(check, 20);
+          }
+        };
+        setTimeout(check, 20);
+      });
     }
   }
 
@@ -331,8 +334,8 @@ export class RoomPeer {
     const totalChunks = Math.ceil(bytes.length / CHUNK_SIZE);
 
     for (let i = 0; i < totalChunks; i++) {
-      // Wait for buffer to drain before sending next chunk
-      await this.waitForBuffer(wrapper.channel);
+      if (wrapper.channel.readyState !== 'open') break;
+      await this.drainBuffer(wrapper.channel);
 
       const start = i * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, bytes.length);
@@ -378,7 +381,7 @@ export class RoomPeer {
       // Wait for all channels to drain
       for (const wrapper of this.peers.values()) {
         if (wrapper.channel?.readyState === 'open') {
-          await this.waitForBuffer(wrapper.channel);
+          await this.drainBuffer(wrapper.channel);
         }
       }
 
