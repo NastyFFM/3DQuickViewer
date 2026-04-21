@@ -23,6 +23,7 @@ interface VRSceneProps {
   onAnimationsFound?: (names: string[]) => void;
   depthOcclusion?: boolean;
   showHands?: boolean;
+  libraryAnimations?: ArrayBuffer[];
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -41,10 +42,11 @@ function centerAndScale(object: THREE.Object3D) {
  * - On selectstart: raycast, if hit → controller.attach(object) (6DOF parent)
  * - On selectend: scene.attach(object) (detach, keep world transform)
  */
-function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null, animationLoop = true, onAnimationsFound }: {
+function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null, animationLoop = true, onAnimationsFound, libraryAnimations = [] }: {
   modelData: ArrayBuffer; fileName: string; scale?: number;
   activeAnimation?: string | null; animationLoop?: boolean;
   onAnimationsFound?: (names: string[]) => void;
+  libraryAnimations?: ArrayBuffer[];
 }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const [animations, setAnimations] = useState<THREE.AnimationClip[]>([]);
@@ -89,6 +91,39 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
       console.error('[VR] Load error:', err);
     }
   }, [modelData, fileName]);
+
+  // Parse library animations
+  useEffect(() => {
+    if (libraryAnimations.length === 0) return;
+    const loader = new GLTFLoader();
+    let cancelled = false;
+    const parseAll = async () => {
+      const libClips: THREE.AnimationClip[] = [];
+      for (const buf of libraryAnimations) {
+        try {
+          await new Promise<void>((resolve) => {
+            loader.parse(buf, '', (gltf) => {
+              for (const clip of gltf.animations) {
+                if (!clip.name.startsWith('📚')) clip.name = '📚 ' + clip.name;
+                libClips.push(clip);
+              }
+              resolve();
+            }, () => resolve());
+          });
+        } catch {}
+      }
+      if (!cancelled && libClips.length > 0) {
+        setAnimations((prev) => {
+          const modelClips = prev.filter((c) => !c.name.startsWith('📚'));
+          const merged = [...modelClips, ...libClips];
+          onAnimationsFound?.(merged.map((c) => c.name));
+          return merged;
+        });
+      }
+    };
+    parseAll();
+    return () => { cancelled = true; };
+  }, [libraryAnimations]);
 
   // Setup XR controller grab events
   useEffect(() => {
@@ -182,7 +217,7 @@ function GridFloor() {
   );
 }
 
-export function VRScene({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true }: VRSceneProps) {
+export function VRScene({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true, libraryAnimations = [] }: VRSceneProps) {
   const [vrSupported, setVrSupported] = useState(false);
 
   useEffect(() => {
@@ -221,7 +256,7 @@ export function VRScene({ modelData, fileName, scale = 1, activeAnimation, anima
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
           <XROrigin />
-          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} />
+          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} libraryAnimations={libraryAnimations} />
           <HandVisibility visible={showHands} />
           <Floor />
           <GridFloor />

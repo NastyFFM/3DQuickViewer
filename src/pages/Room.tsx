@@ -11,12 +11,14 @@ import { RoomScanViewer } from '../components/RoomScanViewer';
 import { ViewerErrorBoundary } from '../components/ViewerErrorBoundary';
 import { useModels } from '../hooks/useModels';
 import { useRoom } from '../hooks/useRoom';
+import { useAnimationLibrary } from '../hooks/useAnimationLibrary';
 import type { StoredModel } from '../types';
 
 export function Room() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { models, addModelFromFile, deleteModelById, refresh } = useModels();
+  const { animations: libraryAnims, addAnimationFromFile, deleteAnimationById } = useAnimationLibrary();
   const [viewing, setViewing] = useState<StoredModel | null>(null);
   const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr'>('3d');
   const [modelScale, setModelScale] = useState(100);
@@ -26,6 +28,8 @@ export function Room() {
   const [animationNames, setAnimationNames] = useState<string[]>([]);
   const [activeAnimation, setActiveAnimation] = useState<string | null>(null);
   const [animationLoop, setAnimationLoop] = useState(true);
+  // Library animation clips (parsed from uploaded GLBs)
+  const [libraryClipNames, setLibraryClipNames] = useState<string[]>([]);
   const [showScan, setShowScan] = useState(false);
   const [isHost] = useState(() => {
     // First visitor to a room becomes host
@@ -167,8 +171,8 @@ export function Room() {
             {/* Canvas hidden but stays in DOM so XR session keeps running */}
             <div style={{ height: 1, overflow: 'hidden', opacity: 0 }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
-                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} />}
-                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} />}
+                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnims.map(a => a.data)} />}
+                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnims.map(a => a.data)} />}
               </ViewerErrorBoundary>
             </div>
 
@@ -259,6 +263,47 @@ export function Room() {
                     </div>
                   );
                 })}
+              </div>
+
+              {/* Animation Library */}
+              <div style={{ marginTop: 20, borderTop: '1px solid #333', paddingTop: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                  <h3 style={{ color: '#888', margin: 0, fontSize: 14 }}>🎬 Animation Library</h3>
+                  <label style={{
+                    background: '#6c63ff', color: '#fff', border: 'none', borderRadius: 8,
+                    padding: '6px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600,
+                  }}>
+                    + Upload
+                    <input type="file" accept=".glb,.gltf,.fbx" style={{ display: 'none' }}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (file) await addAnimationFromFile(file);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
+                {libraryAnims.length === 0 ? (
+                  <div style={{ color: '#555', fontSize: 13 }}>
+                    Lade GLB-Dateien mit Animationen hoch (z.B. von Mixamo)
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {libraryAnims.map((a) => (
+                      <div key={a.id} style={{
+                        background: 'rgba(255,255,255,0.08)', borderRadius: 10,
+                        padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8,
+                      }}>
+                        <span style={{ fontSize: 14 }}>🎬 {a.name}</span>
+                        <span style={{ color: '#666', fontSize: 11 }}>{(a.fileSize / 1024).toFixed(0)}KB</span>
+                        <button onClick={() => deleteAnimationById(a.id)} style={{
+                          background: '#d32f2f', color: '#fff', border: 'none', borderRadius: 4,
+                          padding: '2px 6px', fontSize: 11, cursor: 'pointer',
+                        }}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </>

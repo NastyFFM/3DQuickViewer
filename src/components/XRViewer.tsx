@@ -24,6 +24,7 @@ interface XRViewerProps {
   onAnimationsFound?: (names: string[]) => void;
   depthOcclusion?: boolean;
   showHands?: boolean;
+  libraryAnimations?: ArrayBuffer[];
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -36,10 +37,11 @@ function centerAndScale(object: THREE.Object3D) {
   object.scale.multiplyScalar(scale);
 }
 
-function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null, animationLoop = true, onAnimationsFound }: {
+function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null, animationLoop = true, onAnimationsFound, libraryAnimations = [] }: {
   modelData: ArrayBuffer; fileName: string; scale?: number;
   activeAnimation?: string | null; animationLoop?: boolean;
   onAnimationsFound?: (names: string[]) => void;
+  libraryAnimations?: ArrayBuffer[];
 }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const [animations, setAnimations] = useState<THREE.AnimationClip[]>([]);
@@ -81,6 +83,45 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
       console.error('[XR] Load error:', err);
     }
   }, [modelData, fileName]);
+
+  // Parse library animations and merge with model animations
+  useEffect(() => {
+    if (libraryAnimations.length === 0) return;
+    const loader = new GLTFLoader();
+    let cancelled = false;
+
+    const parseAll = async () => {
+      const libClips: THREE.AnimationClip[] = [];
+      for (const buf of libraryAnimations) {
+        try {
+          await new Promise<void>((resolve) => {
+            loader.parse(buf, '', (gltf) => {
+              for (const clip of gltf.animations) {
+                // Prefix with 📚 to distinguish from model's own
+                if (!clip.name.startsWith('📚')) {
+                  clip.name = '📚 ' + clip.name;
+                }
+                libClips.push(clip);
+              }
+              resolve();
+            }, () => resolve());
+          });
+        } catch {}
+      }
+      if (!cancelled && libClips.length > 0) {
+        setAnimations((prev) => {
+          // Remove old library clips, add new
+          const modelClips = prev.filter((c) => !c.name.startsWith('📚'));
+          const merged = [...modelClips, ...libClips];
+          const allNames = merged.map((c) => c.name);
+          onAnimationsFound?.(allNames);
+          return merged;
+        });
+      }
+    };
+    parseAll();
+    return () => { cancelled = true; };
+  }, [libraryAnimations]);
 
   useEffect(() => {
     const renderer = gl as THREE.WebGLRenderer;
@@ -152,7 +193,7 @@ function HandVisibility({ visible }: { visible: boolean }) {
   return null;
 }
 
-export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true }: XRViewerProps) {
+export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true, libraryAnimations = [] }: XRViewerProps) {
   const [xrSupported, setXrSupported] = useState(false);
 
   useEffect(() => {
@@ -200,7 +241,7 @@ export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, ac
           <ambientLight intensity={1} />
           <directionalLight position={[5, 5, 5]} intensity={1.5} />
           <XROrigin />
-          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} />
+          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} libraryAnimations={libraryAnimations} />
           <HandVisibility visible={showHands} />
         </XR>
       </Canvas>
