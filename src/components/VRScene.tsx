@@ -210,7 +210,7 @@ export function VRScene({ modelData, fileName, scale = 1, activeAnimation, anima
           🥽 Enter VR
         </button>
       )}
-      <Canvas camera={{ position: [0, 1.6, 2], fov: 60 }}>
+      <Canvas key={depthOcclusion ? 'depth' : 'nodepth'} camera={{ position: [0, 1.6, 2], fov: 60 }}>
         <XR store={store}>
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 5, 5]} intensity={1} castShadow />

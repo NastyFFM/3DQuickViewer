@@ -217,6 +217,7 @@ export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, ac
       )}
 
       <Canvas
+        key={depthOcclusion ? 'depth' : 'nodepth'}
         style={{ width: '100%', height: '100%' }}
         camera={{ position: [0, 1.6, 2], fov: 60 }}
       >
