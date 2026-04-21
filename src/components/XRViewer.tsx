@@ -3,6 +3,7 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { useModelAnimation } from '../hooks/useModelAnimation';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
@@ -24,7 +25,7 @@ interface XRViewerProps {
   onAnimationsFound?: (names: string[]) => void;
   depthOcclusion?: boolean;
   showHands?: boolean;
-  libraryAnimations?: ArrayBuffer[];
+  libraryAnimations?: { data: ArrayBuffer; fileName: string }[];
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -41,7 +42,7 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
   modelData: ArrayBuffer; fileName: string; scale?: number;
   activeAnimation?: string | null; animationLoop?: boolean;
   onAnimationsFound?: (names: string[]) => void;
-  libraryAnimations?: ArrayBuffer[];
+  libraryAnimations?: { data: ArrayBuffer; fileName: string }[];
 }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const [animations, setAnimations] = useState<THREE.AnimationClip[]>([]);
@@ -84,37 +85,48 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
     }
   }, [modelData, fileName]);
 
-  // Parse library animations and merge with model animations
+  // Parse library animations (GLB + FBX) and merge with model animations
   useEffect(() => {
     if (libraryAnimations.length === 0) return;
-    const loader = new GLTFLoader();
+    const gltfLoader = new GLTFLoader();
+    const fbxLoader = new FBXLoader();
     let cancelled = false;
 
     const parseAll = async () => {
       const libClips: THREE.AnimationClip[] = [];
-      for (const buf of libraryAnimations) {
+      for (const { data, fileName: fn } of libraryAnimations) {
+        const ext = fn.toLowerCase().split('.').pop();
         try {
-          await new Promise<void>((resolve) => {
-            loader.parse(buf, '', (gltf) => {
-              for (const clip of gltf.animations) {
-                // Prefix with 📚 to distinguish from model's own
-                if (!clip.name.startsWith('📚')) {
-                  clip.name = '📚 ' + clip.name;
-                }
+          if (ext === 'fbx') {
+            // FBXLoader.parse takes ArrayBuffer directly
+            const group = fbxLoader.parse(data, '');
+            if (group.animations) {
+              for (const clip of group.animations) {
+                if (!clip.name.startsWith('📚')) clip.name = '📚 ' + clip.name;
                 libClips.push(clip);
               }
-              resolve();
-            }, () => resolve());
-          });
-        } catch {}
+            }
+          } else {
+            // GLB/GLTF
+            await new Promise<void>((resolve) => {
+              gltfLoader.parse(data, '', (gltf) => {
+                for (const clip of gltf.animations) {
+                  if (!clip.name.startsWith('📚')) clip.name = '📚 ' + clip.name;
+                  libClips.push(clip);
+                }
+                resolve();
+              }, () => resolve());
+            });
+          }
+        } catch (err) {
+          console.warn('[XR] Failed to parse library animation:', fn, err);
+        }
       }
       if (!cancelled && libClips.length > 0) {
         setAnimations((prev) => {
-          // Remove old library clips, add new
           const modelClips = prev.filter((c) => !c.name.startsWith('📚'));
           const merged = [...modelClips, ...libClips];
-          const allNames = merged.map((c) => c.name);
-          onAnimationsFound?.(allNames);
+          onAnimationsFound?.(merged.map((c) => c.name));
           return merged;
         });
       }
