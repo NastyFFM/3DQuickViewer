@@ -3,8 +3,8 @@ import type { PeerMessage, ModelMeta, ModelChunk, StoredModel } from '../types';
 import { getModel, getAllModels, saveModel } from './storage';
 
 const SIGNALING_SERVER = 'https://web-production-84380f.up.railway.app';
-const CHUNK_SIZE = 256 * 1024; // 256KB chunks
-const MAX_BUFFERED = 1024 * 1024; // Wait when buffer exceeds 1MB
+const CHUNK_SIZE = 64 * 1024; // 64KB chunks (safe for all browsers)
+const MAX_BUFFERED = 256 * 1024; // Wait when buffer exceeds 256KB
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 type OnModelList = (models: ModelMeta[]) => void;
@@ -194,8 +194,13 @@ export class RoomPeer {
 
   // Wait until the DataChannel buffer drains below threshold
   private async waitForBuffer(channel: RTCDataChannel): Promise<void> {
-    while (channel.bufferedAmount > MAX_BUFFERED) {
-      await new Promise((r) => setTimeout(r, 50));
+    let waited = 0;
+    while (channel.bufferedAmount > MAX_BUFFERED && waited < 30000) {
+      await new Promise((r) => setTimeout(r, 100));
+      waited += 100;
+    }
+    if (waited >= 30000) {
+      console.warn('[3DQV] Buffer drain timeout after 30s, continuing anyway');
     }
   }
 
