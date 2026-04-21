@@ -404,7 +404,29 @@ export function Room() {
       <div style={{ display: 'flex', gap: 24, padding: 24, flexWrap: 'wrap' }}>
         {/* Left: Upload + QR */}
         <div style={{ flex: '0 0 320px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <DropZone onFile={handleFile} />
+          <DropZone onFile={handleFile} onAnimationFile={async (file) => { await addAnimationFromFile(file); }} />
+
+          {/* Animation Library */}
+          {libraryAnims.length > 0 && (
+            <div style={{ background: '#16162a', borderRadius: 12, padding: 12 }}>
+              <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>🎬 Animationen ({libraryAnims.length})</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {libraryAnims.map((a) => (
+                  <div key={a.id} style={{
+                    background: 'rgba(255,255,255,0.08)', borderRadius: 8,
+                    padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 6,
+                    fontSize: 12, color: '#ccc',
+                  }}>
+                    🎬 {a.name}
+                    <button onClick={() => deleteAnimationById(a.id)} style={{
+                      background: 'none', color: '#888', border: 'none',
+                      cursor: 'pointer', fontSize: 11, padding: 0,
+                    }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div style={{
             background: '#16162a',

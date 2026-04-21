@@ -1,21 +1,24 @@
 import { useState, useCallback, useRef } from 'react';
 
-const ACCEPTED_EXTENSIONS = ['.glb', '.gltf', '.obj', '.stl'];
+const MODEL_EXTENSIONS = ['.glb', '.gltf', '.obj', '.stl'];
+const ANIM_EXTENSIONS = ['.fbx'];
+const ALL_EXTENSIONS = [...MODEL_EXTENSIONS, ...ANIM_EXTENSIONS];
 
 interface DropZoneProps {
   onFile: (file: File) => void;
+  onAnimationFile?: (file: File) => void;
   disabled?: boolean;
 }
 
-export function DropZone({ onFile, disabled }: DropZoneProps) {
+export function DropZone({ onFile, onAnimationFile, disabled }: DropZoneProps) {
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const validateAndEmit = useCallback((file: File) => {
     const ext = '.' + file.name.toLowerCase().split('.').pop();
-    if (!ACCEPTED_EXTENSIONS.includes(ext)) {
-      setError(`Format nicht unterstuetzt. Erlaubt: ${ACCEPTED_EXTENSIONS.join(', ')}`);
+    if (!ALL_EXTENSIONS.includes(ext)) {
+      setError(`Format nicht unterstuetzt. Erlaubt: ${ALL_EXTENSIONS.join(', ')}`);
       return;
     }
     if (file.size > 100 * 1024 * 1024) {
@@ -23,15 +26,22 @@ export function DropZone({ onFile, disabled }: DropZoneProps) {
       return;
     }
     setError(null);
-    onFile(file);
-  }, [onFile]);
+
+    if (ANIM_EXTENSIONS.includes(ext)) {
+      onAnimationFile?.(file);
+    } else {
+      onFile(file);
+    }
+  }, [onFile, onAnimationFile]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
     if (disabled) return;
-    const file = e.dataTransfer.files[0];
-    if (file) validateAndEmit(file);
+    // Handle multiple files
+    for (let i = 0; i < e.dataTransfer.files.length; i++) {
+      validateAndEmit(e.dataTransfer.files[i]);
+    }
   }, [disabled, validateAndEmit]);
 
   const handleClick = () => {
@@ -58,23 +68,27 @@ export function DropZone({ onFile, disabled }: DropZoneProps) {
       <input
         ref={inputRef}
         type="file"
-        accept={ACCEPTED_EXTENSIONS.join(',')}
+        accept={ALL_EXTENSIONS.join(',')}
+        multiple
         style={{ display: 'none' }}
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) validateAndEmit(file);
+          if (e.target.files) {
+            for (let i = 0; i < e.target.files.length; i++) {
+              validateAndEmit(e.target.files[i]);
+            }
+          }
           e.target.value = '';
         }}
       />
       <div style={{ fontSize: 48, marginBottom: 16 }}>📦</div>
       <div style={{ fontSize: 18, fontWeight: 600, color: '#fff', marginBottom: 8 }}>
-        3D-Modell hierher ziehen
+        Dateien hierher ziehen
       </div>
       <div style={{ fontSize: 14, color: '#888' }}>
         oder klicken zum Auswaehlen
       </div>
       <div style={{ fontSize: 12, color: '#666', marginTop: 8 }}>
-        GLB, GLTF, OBJ, STL — max. 100MB
+        Modelle: GLB, GLTF, OBJ, STL — Animationen: FBX
       </div>
       {error && (
         <div style={{ color: '#ff4444', marginTop: 12, fontSize: 14 }}>{error}</div>
