@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
+import { useModelAnimation } from '../hooks/useModelAnimation';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
@@ -16,6 +17,9 @@ interface XRViewerProps {
   fileName: string;
   scale?: number;
   autoEnter?: boolean;
+  activeAnimation?: string | null;
+  animationLoop?: boolean;
+  onAnimationsFound?: (names: string[]) => void;
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -33,8 +37,13 @@ function centerAndScale(object: THREE.Object3D) {
  * Model appears in front of the user in the real world.
  * No floor/grid — you see the real environment through the camera.
  */
-function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBuffer; fileName: string; scale?: number }) {
+function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null, animationLoop = true, onAnimationsFound }: {
+  modelData: ArrayBuffer; fileName: string; scale?: number;
+  activeAnimation?: string | null; animationLoop?: boolean;
+  onAnimationsFound?: (names: string[]) => void;
+}) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
+  const [animations, setAnimations] = useState<THREE.AnimationClip[]>([]);
   const groupRef = useRef<THREE.Group>(null);
   const { gl, scene } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
@@ -49,6 +58,11 @@ function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBu
         loader.parse(modelData, '', (gltf) => {
           centerAndScale(gltf.scene);
           setObject(gltf.scene);
+          if (gltf.animations.length > 0) {
+            setAnimations(gltf.animations);
+            const names = gltf.animations.map((a) => a.name || `Animation ${gltf.animations.indexOf(a)}`);
+            onAnimationsFound?.(names);
+          }
         });
       } else if (ext === 'obj') {
         const loader = new OBJLoader();
@@ -119,6 +133,9 @@ function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBu
     };
   }, [gl, scene]);
 
+  // Animation
+  useModelAnimation(object, animations, activeAnimation ?? null, animationLoop ?? true);
+
   if (!object) return null;
 
   // Spawn in front of user, slightly below eye level
@@ -131,7 +148,7 @@ function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBu
   );
 }
 
-export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false }: XRViewerProps) {
+export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound }: XRViewerProps) {
   const [xrSupported, setXrSupported] = useState(false);
 
   useEffect(() => {
@@ -199,7 +216,7 @@ export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false }: 
           <ambientLight intensity={1} />
           <directionalLight position={[5, 5, 5]} intensity={1.5} />
           <XROrigin />
-          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} />
+          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} />
         </XR>
       </Canvas>
     </div>

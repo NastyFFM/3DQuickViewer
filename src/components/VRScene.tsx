@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
+import { useModelAnimation } from '../hooks/useModelAnimation';
 import { Environment } from '@react-three/drei';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -16,6 +17,9 @@ interface VRSceneProps {
   modelData: ArrayBuffer;
   fileName: string;
   scale?: number;
+  activeAnimation?: string | null;
+  animationLoop?: boolean;
+  onAnimationsFound?: (names: string[]) => void;
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -34,8 +38,13 @@ function centerAndScale(object: THREE.Object3D) {
  * - On selectstart: raycast, if hit → controller.attach(object) (6DOF parent)
  * - On selectend: scene.attach(object) (detach, keep world transform)
  */
-function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBuffer; fileName: string; scale?: number }) {
+function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null, animationLoop = true, onAnimationsFound }: {
+  modelData: ArrayBuffer; fileName: string; scale?: number;
+  activeAnimation?: string | null; animationLoop?: boolean;
+  onAnimationsFound?: (names: string[]) => void;
+}) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
+  const [animations, setAnimations] = useState<THREE.AnimationClip[]>([]);
   const groupRef = useRef<THREE.Group>(null);
   const { gl, scene } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
@@ -51,6 +60,11 @@ function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBu
         loader.parse(modelData, '', (gltf) => {
           centerAndScale(gltf.scene);
           setObject(gltf.scene);
+          if (gltf.animations.length > 0) {
+            setAnimations(gltf.animations);
+            const names = gltf.animations.map((a) => a.name || `Animation ${gltf.animations.indexOf(a)}`);
+            onAnimationsFound?.(names);
+          }
         });
       } else if (ext === 'obj') {
         const loader = new OBJLoader();
@@ -126,6 +140,8 @@ function GrabbableModel({ modelData, fileName, scale = 1 }: { modelData: ArrayBu
     };
   }, [gl, scene]);
 
+  useModelAnimation(object, animations, activeAnimation ?? null, animationLoop ?? true);
+
   if (!object) return null;
 
   return (
@@ -152,7 +168,7 @@ function GridFloor() {
   );
 }
 
-export function VRScene({ modelData, fileName, scale = 1 }: VRSceneProps) {
+export function VRScene({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound }: VRSceneProps) {
   const [vrSupported, setVrSupported] = useState(false);
 
   useEffect(() => {
@@ -191,7 +207,7 @@ export function VRScene({ modelData, fileName, scale = 1 }: VRSceneProps) {
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
           <XROrigin />
-          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} />
+          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} />
           <Floor />
           <GridFloor />
           <Environment preset="city" />

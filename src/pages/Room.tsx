@@ -19,7 +19,11 @@ export function Room() {
   const { models, addModelFromFile, deleteModelById, refresh } = useModels();
   const [viewing, setViewing] = useState<StoredModel | null>(null);
   const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr'>('3d');
-  const [modelScale, setModelScale] = useState(100); // percentage, 50-200
+  const [modelScale, setModelScale] = useState(100);
+  // Animation state
+  const [animationNames, setAnimationNames] = useState<string[]>([]);
+  const [activeAnimation, setActiveAnimation] = useState<string | null>(null);
+  const [animationLoop, setAnimationLoop] = useState(true);
   const [showScan, setShowScan] = useState(false);
   const [isHost] = useState(() => {
     // First visitor to a room becomes host
@@ -139,8 +143,8 @@ export function Room() {
             {/* Canvas hidden but stays in DOM so XR session keeps running */}
             <div style={{ height: 1, overflow: 'hidden', opacity: 0 }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
-                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter />}
-                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />}
+                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} />}
+                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} />}
               </ViewerErrorBoundary>
             </div>
 
@@ -151,34 +155,86 @@ export function Room() {
                 gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
                 gap: 12,
               }}>
-                {models.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => setViewing(m)}
-                    style={{
-                      background: m.id === viewing.id ? '#6c63ff' : 'rgba(255,255,255,0.08)',
-                      color: '#fff',
-                      border: m.id === viewing.id ? '2px solid #9c8fff' : '2px solid #333',
-                      borderRadius: 16,
-                      padding: '20px 16px',
-                      fontSize: 18,
-                      fontWeight: m.id === viewing.id ? 700 : 500,
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 6,
-                    }}
-                  >
-                    <span style={{ fontSize: 28 }}>🧊</span>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {m.name}
-                    </span>
-                    <span style={{ fontSize: 12, color: m.id === viewing.id ? '#c8c0ff' : '#666' }}>
-                      {(m.fileSize / (1024 * 1024)).toFixed(1)} MB
-                    </span>
-                  </button>
-                ))}
+                {models.map((m) => {
+                  const isActive = m.id === viewing.id;
+                  return (
+                    <div
+                      key={m.id}
+                      style={{
+                        background: isActive ? '#6c63ff' : 'rgba(255,255,255,0.08)',
+                        color: '#fff',
+                        border: isActive ? '2px solid #9c8fff' : '2px solid #333',
+                        borderRadius: 16,
+                        padding: '16px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      {/* Model info — clickable to select */}
+                      <div
+                        onClick={() => { setViewing(m); setAnimationNames([]); setActiveAnimation(null); }}
+                        style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}
+                      >
+                        <span style={{ fontSize: 28 }}>🧊</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 16, fontWeight: isActive ? 700 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {m.name}
+                          </div>
+                          <div style={{ fontSize: 12, color: isActive ? '#c8c0ff' : '#666' }}>
+                            {(m.fileSize / (1024 * 1024)).toFixed(1)} MB
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Animation controls — only on active model */}
+                      {isActive && animationNames.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 8 }}>
+                          {/* Loop toggle */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <button
+                              onClick={() => setAnimationLoop(!animationLoop)}
+                              style={{
+                                background: animationLoop ? '#4caf50' : '#555',
+                                color: '#fff', border: 'none', borderRadius: 6,
+                                padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+                              }}
+                            >
+                              {animationLoop ? '🔁 Loop' : '▶️ Einmal'}
+                            </button>
+                            <button
+                              onClick={() => setActiveAnimation(null)}
+                              style={{
+                                background: '#d32f2f', color: '#fff', border: 'none',
+                                borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+                              }}
+                            >
+                              ⏹ Stop
+                            </button>
+                          </div>
+                          {/* Animation list */}
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {animationNames.map((name) => (
+                              <button
+                                key={name}
+                                onClick={() => setActiveAnimation(name)}
+                                style={{
+                                  background: activeAnimation === name ? '#fff' : 'rgba(255,255,255,0.15)',
+                                  color: activeAnimation === name ? '#333' : '#fff',
+                                  border: 'none', borderRadius: 6,
+                                  padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+                                  fontWeight: activeAnimation === name ? 700 : 400,
+                                }}
+                              >
+                                ▶ {name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </>
