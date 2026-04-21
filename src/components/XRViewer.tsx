@@ -7,10 +7,15 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 
-const store = createXRStore({
+const storeWithDepth = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
   depthSensing: true,
+});
+
+const storeNoDepth = createXRStore({
+  hand: { touchPointer: true, rayPointer: true },
+  controller: { rayPointer: true },
 });
 
 interface XRViewerProps {
@@ -21,6 +26,7 @@ interface XRViewerProps {
   activeAnimation?: string | null;
   animationLoop?: boolean;
   onAnimationsFound?: (names: string[]) => void;
+  depthOcclusion?: boolean;
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -149,7 +155,8 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
   );
 }
 
-export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound }: XRViewerProps) {
+export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound, depthOcclusion = true }: XRViewerProps) {
+  const store = depthOcclusion ? storeWithDepth : storeNoDepth;
   const [xrSupported, setXrSupported] = useState(false);
 
   useEffect(() => {

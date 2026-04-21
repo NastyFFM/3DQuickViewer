@@ -8,10 +8,15 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 
-const store = createXRStore({
+const storeWithDepth = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
   depthSensing: true,
+});
+
+const storeNoDepth = createXRStore({
+  hand: { touchPointer: true, rayPointer: true },
+  controller: { rayPointer: true },
 });
 
 interface VRSceneProps {
@@ -21,6 +26,7 @@ interface VRSceneProps {
   activeAnimation?: string | null;
   animationLoop?: boolean;
   onAnimationsFound?: (names: string[]) => void;
+  depthOcclusion?: boolean;
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -169,7 +175,8 @@ function GridFloor() {
   );
 }
 
-export function VRScene({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound }: VRSceneProps) {
+export function VRScene({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, depthOcclusion = true }: VRSceneProps) {
+  const store = depthOcclusion ? storeWithDepth : storeNoDepth;
   const [vrSupported, setVrSupported] = useState(false);
 
   useEffect(() => {
