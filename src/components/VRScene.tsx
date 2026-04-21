@@ -8,16 +8,17 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 
-const storeWithDepth = createXRStore({
-  hand: { touchPointer: true, rayPointer: true },
-  controller: { rayPointer: true },
-  depthSensing: true,
-});
+const stores = {
+  'hands-depth': createXRStore({ hand: { touchPointer: true, rayPointer: true }, controller: { rayPointer: true }, depthSensing: true }),
+  'hands-nodepth': createXRStore({ hand: { touchPointer: true, rayPointer: true }, controller: { rayPointer: true } }),
+  'nohands-depth': createXRStore({ hand: false, controller: { rayPointer: true }, depthSensing: true }),
+  'nohands-nodepth': createXRStore({ hand: false, controller: { rayPointer: true } }),
+};
 
-const storeNoDepth = createXRStore({
-  hand: { touchPointer: true, rayPointer: true },
-  controller: { rayPointer: true },
-});
+function getStore(hands: boolean, depth: boolean) {
+  const key = `${hands ? 'hands' : 'nohands'}-${depth ? 'depth' : 'nodepth'}` as keyof typeof stores;
+  return stores[key];
+}
 
 interface VRSceneProps {
   modelData: ArrayBuffer;
@@ -27,6 +28,7 @@ interface VRSceneProps {
   animationLoop?: boolean;
   onAnimationsFound?: (names: string[]) => void;
   depthOcclusion?: boolean;
+  showHands?: boolean;
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -175,8 +177,8 @@ function GridFloor() {
   );
 }
 
-export function VRScene({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, depthOcclusion = true }: VRSceneProps) {
-  const store = depthOcclusion ? storeWithDepth : storeNoDepth;
+export function VRScene({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, depthOcclusion = true, showHands = true }: VRSceneProps) {
+  const store = getStore(showHands, depthOcclusion);
   const [vrSupported, setVrSupported] = useState(false);
 
   useEffect(() => {
@@ -210,7 +212,7 @@ export function VRScene({ modelData, fileName, scale = 1, activeAnimation, anima
           🥽 Enter VR
         </button>
       )}
-      <Canvas key={depthOcclusion ? 'depth' : 'nodepth'} camera={{ position: [0, 1.6, 2], fov: 60 }}>
+      <Canvas key={`${depthOcclusion ? 'd' : 'nd'}-${showHands ? 'h' : 'nh'}`} camera={{ position: [0, 1.6, 2], fov: 60 }}>
         <XR store={store}>
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 5, 5]} intensity={1} castShadow />

@@ -7,16 +7,18 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 
-const storeWithDepth = createXRStore({
-  hand: { touchPointer: true, rayPointer: true },
-  controller: { rayPointer: true },
-  depthSensing: true,
-});
+// 4 store combos: hands on/off × depth on/off
+const stores = {
+  'hands-depth': createXRStore({ hand: { touchPointer: true, rayPointer: true }, controller: { rayPointer: true }, depthSensing: true }),
+  'hands-nodepth': createXRStore({ hand: { touchPointer: true, rayPointer: true }, controller: { rayPointer: true } }),
+  'nohands-depth': createXRStore({ hand: false, controller: { rayPointer: true }, depthSensing: true }),
+  'nohands-nodepth': createXRStore({ hand: false, controller: { rayPointer: true } }),
+};
 
-const storeNoDepth = createXRStore({
-  hand: { touchPointer: true, rayPointer: true },
-  controller: { rayPointer: true },
-});
+function getStore(hands: boolean, depth: boolean) {
+  const key = `${hands ? 'hands' : 'nohands'}-${depth ? 'depth' : 'nodepth'}` as keyof typeof stores;
+  return stores[key];
+}
 
 interface XRViewerProps {
   modelData: ArrayBuffer;
@@ -27,6 +29,7 @@ interface XRViewerProps {
   animationLoop?: boolean;
   onAnimationsFound?: (names: string[]) => void;
   depthOcclusion?: boolean;
+  showHands?: boolean;
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -155,8 +158,8 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
   );
 }
 
-export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound, depthOcclusion = true }: XRViewerProps) {
-  const store = depthOcclusion ? storeWithDepth : storeNoDepth;
+export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound, depthOcclusion = true, showHands = true }: XRViewerProps) {
+  const store = getStore(showHands, depthOcclusion);
   const [xrSupported, setXrSupported] = useState(false);
 
   useEffect(() => {
@@ -217,7 +220,7 @@ export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, ac
       )}
 
       <Canvas
-        key={depthOcclusion ? 'depth' : 'nodepth'}
+        key={`${depthOcclusion ? 'd' : 'nd'}-${showHands ? 'h' : 'nh'}`}
         style={{ width: '100%', height: '100%' }}
         camera={{ position: [0, 1.6, 2], fov: 60 }}
       >

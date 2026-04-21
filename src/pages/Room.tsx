@@ -21,6 +21,7 @@ export function Room() {
   const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr'>('3d');
   const [modelScale, setModelScale] = useState(100);
   const [occlusionEnabled, setOcclusionEnabled] = useState(true);
+  const [handsEnabled, setHandsEnabled] = useState(true);
   // Animation state
   const [animationNames, setAnimationNames] = useState<string[]>([]);
   const [activeAnimation, setActiveAnimation] = useState<string | null>(null);
@@ -150,13 +151,24 @@ export function Room() {
               >
                 {occlusionEnabled ? '🫣 Occ' : '👁 Occ'}
               </button>
+              <button
+                onClick={() => setHandsEnabled(!handsEnabled)}
+                style={{
+                  background: handsEnabled ? '#4caf50' : '#555',
+                  color: '#fff', border: 'none', borderRadius: 8,
+                  padding: '8px 12px', fontSize: 13, cursor: 'pointer',
+                  fontWeight: 600, whiteSpace: 'nowrap',
+                }}
+              >
+                {handsEnabled ? '🤚 Hands' : '🚫 Hands'}
+              </button>
             </div>
 
             {/* Canvas hidden but stays in DOM so XR session keeps running */}
             <div style={{ height: 1, overflow: 'hidden', opacity: 0 }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
-                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} />}
-                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} />}
+                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} />}
+                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} />}
               </ViewerErrorBoundary>
             </div>
 
