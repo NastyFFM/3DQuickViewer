@@ -1,3 +1,5 @@
+export type ItemType = 'model' | 'animation';
+
 export interface StoredModel {
   id: string;
   name: string;
@@ -7,6 +9,7 @@ export interface StoredModel {
   thumbnail?: string;
   createdAt: number;
   roomId?: string;
+  type?: ItemType; // undefined == 'model' for backwards compat
 }
 
 export interface RoomState {
@@ -34,6 +37,7 @@ export interface ModelMeta {
   fileName: string;
   fileSize: number;
   thumbnail?: string;
+  type?: ItemType;
 }
 
 export interface ModelChunk {

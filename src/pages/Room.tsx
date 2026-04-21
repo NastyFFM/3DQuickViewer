@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { DropZone } from '../components/DropZone';
@@ -11,15 +11,12 @@ import { RoomScanViewer } from '../components/RoomScanViewer';
 import { ViewerErrorBoundary } from '../components/ViewerErrorBoundary';
 import { useModels } from '../hooks/useModels';
 import { useRoom } from '../hooks/useRoom';
-import { useAnimationLibrary } from '../hooks/useAnimationLibrary';
 import type { StoredModel } from '../types';
 
 export function Room() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { models, addModelFromFile, deleteModelById, refresh } = useModels();
-  const { animations: libraryAnims, addAnimationFromFile, deleteAnimationById } = useAnimationLibrary();
-  const animInputRef = useRef<HTMLInputElement>(null);
+  const { models, animations, items, addModelFromFile, deleteModelById, refresh } = useModels();
   const [viewing, setViewing] = useState<StoredModel | null>(null);
   const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr'>('3d');
   const [modelScale, setModelScale] = useState(100);
@@ -31,13 +28,12 @@ export function Room() {
   const [animationLoop, setAnimationLoop] = useState(true);
   const [showScan, setShowScan] = useState(false);
   const [isHost] = useState(() => {
-    // First visitor to a room becomes host
     const key = `3dqv-host-${roomId}`;
     if (!sessionStorage.getItem(key)) {
       sessionStorage.setItem(key, 'true');
       return true;
     }
-    return true; // In same browser, always host
+    return true;
   });
 
   const {
@@ -83,19 +79,11 @@ export function Room() {
     URL.revokeObjectURL(url);
   }, []);
 
-  // Refresh models immediately when a model is received via P2P
   useEffect(() => {
     if (lastReceived > 0) {
       refresh();
     }
   }, [lastReceived, refresh]);
-
-  // Light polling fallback — only when NOT in XR (avoids tracking stutter)
-  useEffect(() => {
-    if (viewMode === 'xr' || viewMode === 'vr') return;
-    const interval = setInterval(refresh, 5000);
-    return () => clearInterval(interval);
-  }, [refresh, viewMode]);
 
   const shareUrl = typeof window !== 'undefined'
     ? `${window.location.origin}${import.meta.env.BASE_URL}room/${roomId}`
@@ -106,7 +94,8 @@ export function Room() {
     return null;
   }
 
-  // Room scan mode
+  const libraryAnimations = animations.map((a) => ({ data: a.data, fileName: a.fileName }));
+
   if (showScan) {
     return (
       <div style={{ width: '100vw', height: '100vh', background: '#0d0d1a', display: 'flex', flexDirection: 'column' }}>
@@ -123,7 +112,6 @@ export function Room() {
     );
   }
 
-  // Viewing a model
   if (viewing) {
     const isGlb = viewing.fileName.toLowerCase().endsWith('.glb') || viewing.fileName.toLowerCase().endsWith('.gltf');
     const isXR = viewMode === 'xr' || viewMode === 'vr';
@@ -132,10 +120,8 @@ export function Room() {
     return (
       <div style={{ width: '100vw', height: '100vh', background: '#0d0d1a', display: 'flex', flexDirection: 'column' }}>
 
-        {/* ===== XR MODE: hidden canvas + full gallery ===== */}
         {isXR ? (
           <>
-            {/* Top bar: scale slider only */}
             <div style={{
               display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px',
               background: '#111', borderBottom: '1px solid #333',
@@ -170,15 +156,13 @@ export function Room() {
               </button>
             </div>
 
-            {/* Canvas hidden but stays in DOM so XR session keeps running */}
             <div style={{ height: 1, overflow: 'hidden', opacity: 0 }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
-                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnims.map(a => ({ data: a.data, fileName: a.fileName }))} />}
-                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnims.map(a => ({ data: a.data, fileName: a.fileName }))} />}
+                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnimations} />}
+                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnimations} />}
               </ViewerErrorBoundary>
             </div>
 
-            {/* Full-screen model gallery */}
             <div style={{ flex: 1, overflow: 'auto', padding: 16, background: '#0d0d1a' }}>
               <div style={{
                 display: 'grid',
@@ -201,7 +185,6 @@ export function Room() {
                         gap: 8,
                       }}
                     >
-                      {/* Model info — clickable to select */}
                       <div
                         onClick={() => { setViewing(m); setAnimationNames([]); setActiveAnimation(null); }}
                         style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}
@@ -217,10 +200,8 @@ export function Room() {
                         </div>
                       </div>
 
-                      {/* Animation controls — only on active model */}
                       {isActive && animationNames.length > 0 && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 8 }}>
-                          {/* Loop toggle */}
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <button
                               onClick={() => setAnimationLoop(!animationLoop)}
@@ -242,7 +223,6 @@ export function Room() {
                               ⏹ Stop
                             </button>
                           </div>
-                          {/* Animation list */}
                           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                             {animationNames.map((name) => (
                               <button
@@ -267,10 +247,27 @@ export function Room() {
                 })}
               </div>
 
+              {animations.length > 0 && (
+                <div style={{ marginTop: 20 }}>
+                  <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>
+                    🎬 Animations-Bibliothek ({animations.length}) — werden automatisch auf das aktive Modell angewendet
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {animations.map((a) => (
+                      <div key={a.id} style={{
+                        background: 'rgba(233,180,99,0.15)', borderRadius: 8,
+                        padding: '6px 10px', fontSize: 12, color: '#e9b463',
+                        border: '1px solid rgba(233,180,99,0.3)',
+                      }}>
+                        🎬 {a.name}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </>
         ) : (
-          /* ===== NON-XR MODE: Normal layout ===== */
           <>
             <div style={{ padding: '6px 12px', display: 'flex', gap: 6, alignItems: 'center', borderBottom: '1px solid #222', flexWrap: 'wrap' }}>
               <button onClick={() => { setViewing(null); setViewMode('3d'); }} style={backBtnStyle}>Zurueck</button>
@@ -293,7 +290,6 @@ export function Room() {
                 {viewMode === '3d' && <ModelViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />}
                 {viewMode === 'ar' && <ARViewer modelData={viewing.data} fileName={viewing.fileName} />}
               </ViewerErrorBoundary>
-              {/* Big XR button overlaid on the 3D viewer */}
               <button
                 onClick={() => setViewMode('xr')}
                 style={{
@@ -324,7 +320,6 @@ export function Room() {
 
   return (
     <div style={{ minHeight: '100vh', background: '#0d0d1a', color: '#fff' }}>
-      {/* Header */}
       <div style={{ padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid #222' }}>
         <button onClick={() => navigate('/')} style={{ ...backBtnStyle, padding: '6px 12px', fontSize: 13 }}>
           Startseite
@@ -366,69 +361,8 @@ export function Room() {
       </div>
 
       <div style={{ display: 'flex', gap: 24, padding: 24, flexWrap: 'wrap' }}>
-        {/* Left: Upload + QR */}
         <div style={{ flex: '0 0 320px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          {/* Model Upload */}
           <DropZone onFile={handleFile} />
-
-          {/* Animation Upload */}
-          <div
-            onClick={() => animInputRef.current?.click()}
-            style={{
-              border: '2px dashed #555',
-              borderRadius: 16,
-              padding: '24px 16px',
-              textAlign: 'center',
-              cursor: 'pointer',
-              background: 'rgba(255,255,255,0.03)',
-            }}
-          >
-            <input
-              ref={animInputRef}
-              type="file"
-              accept=".fbx"
-              multiple
-              style={{ display: 'none' }}
-              onChange={async (e) => {
-                if (e.target.files) {
-                  for (let i = 0; i < e.target.files.length; i++) {
-                    await addAnimationFromFile(e.target.files[i]);
-                  }
-                }
-                e.target.value = '';
-              }}
-            />
-            <div style={{ fontSize: 32, marginBottom: 8 }}>🎬</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: '#fff', marginBottom: 4 }}>
-              Animationen hochladen
-            </div>
-            <div style={{ fontSize: 12, color: '#666' }}>
-              FBX-Dateien (z.B. von Mixamo)
-            </div>
-          </div>
-
-          {/* Uploaded Animations List */}
-          {libraryAnims.length > 0 && (
-            <div style={{ background: '#16162a', borderRadius: 12, padding: 12 }}>
-              <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>🎬 Animationen ({libraryAnims.length})</div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {libraryAnims.map((a) => (
-                  <div key={a.id} style={{
-                    background: 'rgba(255,255,255,0.08)', borderRadius: 8,
-                    padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 6,
-                    fontSize: 12, color: '#ccc',
-                  }}>
-                    🎬 {a.name}
-                    <span style={{ color: '#666' }}>{(a.fileSize / 1024).toFixed(0)}KB</span>
-                    <button onClick={() => deleteAnimationById(a.id)} style={{
-                      background: '#d32f2f', color: '#fff', border: 'none',
-                      borderRadius: 4, padding: '1px 5px', fontSize: 10, cursor: 'pointer',
-                    }}>✕</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           <div style={{
             background: '#16162a',
@@ -469,13 +403,15 @@ export function Room() {
           )}
         </div>
 
-        {/* Right: Gallery */}
         <div style={{ flex: 1, minWidth: 300 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0, marginBottom: 16 }}>
-            Meine Modelle
+            Galerie
+            <span style={{ fontSize: 13, fontWeight: 400, color: '#888', marginLeft: 12 }}>
+              {models.length} Modell{models.length !== 1 ? 'e' : ''} · {animations.length} Animation{animations.length !== 1 ? 'en' : ''}
+            </span>
           </h2>
           <ModelGallery
-            localModels={models}
+            localModels={items}
             remoteModels={remoteModels}
             transfers={transfers}
             onView={setViewing}
@@ -485,6 +421,7 @@ export function Room() {
             onDownload={handleDownload}
             showSend={peers.length > 0}
             showDownload={true}
+            emptyLabel="Noch nichts vorhanden — ziehe ein Modell (.glb/.gltf/.obj/.stl) oder eine FBX-Animation hierher"
           />
         </div>
       </div>
@@ -518,5 +455,3 @@ const tabActiveStyle: React.CSSProperties = {
   background: '#6c63ff',
   color: '#fff',
 };
-
-

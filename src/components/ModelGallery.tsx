@@ -1,4 +1,4 @@
-import type { StoredModel, ModelMeta, TransferProgress } from '../types';
+import type { StoredModel, ModelMeta, TransferProgress, ItemType } from '../types';
 
 interface ModelGalleryProps {
   localModels: StoredModel[];
@@ -11,6 +11,7 @@ interface ModelGalleryProps {
   onDownload?: (id: string) => void;
   showSend?: boolean;
   showDownload?: boolean;
+  emptyLabel?: string;
 }
 
 function formatSize(bytes: number): string {
@@ -19,10 +20,15 @@ function formatSize(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+function iconFor(type: ItemType | undefined): string {
+  return type === 'animation' ? '🎬' : '🧊';
+}
+
 function ModelCard({
   name,
   fileName,
   fileSize,
+  type,
   isLocal,
   isTransferring,
   progress,
@@ -37,6 +43,7 @@ function ModelCard({
   name: string;
   fileName: string;
   fileSize: number;
+  type: ItemType | undefined;
   isLocal: boolean;
   isTransferring?: boolean;
   progress?: number;
@@ -48,6 +55,7 @@ function ModelCard({
   showSend?: boolean;
   showDownload?: boolean;
 }) {
+  const isAnimation = type === 'animation';
   return (
     <div
       style={{
@@ -57,16 +65,17 @@ function ModelCard({
         display: 'flex',
         flexDirection: 'column',
         gap: 8,
+        border: isAnimation ? '1px solid rgba(233, 180, 99, 0.3)' : '1px solid transparent',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 24 }}>🧊</span>
+        <span style={{ fontSize: 24 }}>{iconFor(type)}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {name}
           </div>
           <div style={{ fontSize: 12, color: '#888' }}>
-            {formatSize(fileSize)} — {fileName.split('.').pop()?.toUpperCase()}
+            {formatSize(fileSize)} — {isAnimation ? 'Animation' : fileName.split('.').pop()?.toUpperCase()}
           </div>
         </div>
       </div>
@@ -85,7 +94,7 @@ function ModelCard({
       )}
 
       <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-        {isLocal && onView && (
+        {isLocal && !isAnimation && onView && (
           <button onClick={onView} style={btnStyle}>Ansehen</button>
         )}
         {isLocal && onSave && (
@@ -127,6 +136,7 @@ export function ModelGallery({
   onDownload,
   showSend,
   showDownload,
+  emptyLabel = 'Noch keine Modelle vorhanden',
 }: ModelGalleryProps) {
   const localIds = new Set(localModels.map((m) => m.id));
   const remoteOnly = remoteModels.filter((m) => !localIds.has(m.id));
@@ -134,7 +144,7 @@ export function ModelGallery({
   if (localModels.length === 0 && remoteOnly.length === 0) {
     return (
       <div style={{ color: '#666', textAlign: 'center', padding: 24 }}>
-        Noch keine Modelle vorhanden
+        {emptyLabel}
       </div>
     );
   }
@@ -149,6 +159,7 @@ export function ModelGallery({
             name={model.name}
             fileName={model.fileName}
             fileSize={model.fileSize}
+            type={model.type}
             isLocal
             isTransferring={!!transfer}
             progress={transfer?.progress}
@@ -168,6 +179,7 @@ export function ModelGallery({
             name={meta.name}
             fileName={meta.fileName}
             fileSize={meta.fileSize}
+            type={meta.type}
             isLocal={false}
             isTransferring={!!transfer}
             progress={transfer?.progress}

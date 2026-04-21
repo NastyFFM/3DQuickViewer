@@ -1,14 +1,19 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { getAllModels, saveModel, deleteModel as removeModel, generateId } from '../lib/storage';
-import type { StoredModel } from '../types';
+import type { StoredModel, ItemType } from '../types';
+
+function detectTypeFromFileName(fileName: string): ItemType {
+  const ext = fileName.toLowerCase().split('.').pop();
+  return ext === 'fbx' ? 'animation' : 'model';
+}
 
 export function useModels() {
-  const [models, setModels] = useState<StoredModel[]>([]);
+  const [items, setItems] = useState<StoredModel[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     const all = await getAllModels();
-    setModels(all.sort((a, b) => b.createdAt - a.createdAt));
+    setItems(all.sort((a, b) => b.createdAt - a.createdAt));
   }, []);
 
   useEffect(() => {
@@ -25,6 +30,7 @@ export function useModels() {
       data,
       createdAt: Date.now(),
       roomId,
+      type: detectTypeFromFileName(file.name),
     };
     await saveModel(model);
     await refresh();
@@ -36,5 +42,8 @@ export function useModels() {
     await refresh();
   }, [refresh]);
 
-  return { models, loading, refresh, addModelFromFile, deleteModelById };
+  const models = useMemo(() => items.filter((m) => m.type !== 'animation'), [items]);
+  const animations = useMemo(() => items.filter((m) => m.type === 'animation'), [items]);
+
+  return { models, animations, items, loading, refresh, addModelFromFile, deleteModelById };
 }

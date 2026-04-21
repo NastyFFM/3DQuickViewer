@@ -166,8 +166,8 @@ export class RoomPeer {
 
       // Send model list on connect
       const models = await getAllModels();
-      const metas: ModelMeta[] = models.map(({ id, name, fileName, fileSize, thumbnail }) => ({
-        id, name, fileName, fileSize, thumbnail,
+      const metas: ModelMeta[] = models.map(({ id, name, fileName, fileSize, thumbnail, type }) => ({
+        id, name, fileName, fileSize, thumbnail, type,
       }));
       this.sendToPeer(peerId, { type: 'model-list', payload: metas });
     };
@@ -296,6 +296,7 @@ export class RoomPeer {
             fileName: completed.meta.fileName,
             fileSize: completed.meta.fileSize,
             thumbnail: completed.meta.thumbnail,
+            type: completed.meta.type,
             data: fullBytes.buffer,
             createdAt: Date.now(),
             roomId: this.roomId,
@@ -326,6 +327,7 @@ export class RoomPeer {
       fileName: model.fileName,
       fileSize: model.fileSize,
       thumbnail: model.thumbnail,
+      type: model.type,
     };
 
     this.sendToPeer(peerId, { type: 'model-meta', payload: meta });
@@ -370,6 +372,7 @@ export class RoomPeer {
       fileName: model.fileName,
       fileSize: model.fileSize,
       thumbnail: model.thumbnail,
+      type: model.type,
     };
 
     this.broadcast({ type: 'model-meta', payload: meta });
@@ -414,8 +417,8 @@ export class RoomPeer {
 
   async broadcastModelList() {
     const models = await getAllModels();
-    const metas: ModelMeta[] = models.map(({ id, name, fileName, fileSize, thumbnail }) => ({
-      id, name, fileName, fileSize, thumbnail,
+    const metas: ModelMeta[] = models.map(({ id, name, fileName, fileSize, thumbnail, type }) => ({
+      id, name, fileName, fileSize, thumbnail, type,
     }));
     this.broadcast({ type: 'model-list', payload: metas });
   }

@@ -2,30 +2,32 @@ import { openDB, type IDBPDatabase } from 'idb';
 import type { StoredModel, ModelMeta } from '../types';
 
 const DB_NAME = '3dquickviewer';
-const DB_VERSION = 2; // bumped for animations store
+const DB_VERSION = 3; // v3: unified models + animations into one store via `type` field
 const MODELS_STORE = 'models';
-const ANIMS_STORE = 'animations';
-
-export interface StoredAnimation {
-  id: string;
-  name: string;
-  fileName: string;
-  fileSize: number;
-  data: ArrayBuffer;
-  createdAt: number;
-}
+const ANIMS_STORE = 'animations'; // legacy — only read during migration
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
 function getDB() {
   if (!dbPromise) {
     dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion, _newVersion, tx) {
         if (!db.objectStoreNames.contains(MODELS_STORE)) {
           db.createObjectStore(MODELS_STORE, { keyPath: 'id' });
         }
         if (!db.objectStoreNames.contains(ANIMS_STORE)) {
           db.createObjectStore(ANIMS_STORE, { keyPath: 'id' });
+        }
+        if (oldVersion < 3) {
+          // Migrate old animations into the unified models store
+          const modelsStore = tx.objectStore(MODELS_STORE);
+          const animsStore = tx.objectStore(ANIMS_STORE);
+          animsStore.getAll().then((anims) => {
+            for (const a of anims) {
+              modelsStore.put({ ...a, type: 'animation' });
+            }
+            animsStore.clear();
+          });
         }
       },
     });
@@ -33,7 +35,6 @@ function getDB() {
   return dbPromise;
 }
 
-// Models
 export async function saveModel(model: StoredModel): Promise<void> {
   const db = await getDB();
   await db.put(MODELS_STORE, model);
@@ -56,28 +57,11 @@ export async function deleteModel(id: string): Promise<void> {
 
 export async function getModelMetas(): Promise<ModelMeta[]> {
   const models = await getAllModels();
-  return models.map(({ id, name, fileName, fileSize, thumbnail }) => ({
-    id, name, fileName, fileSize, thumbnail,
+  return models.map(({ id, name, fileName, fileSize, thumbnail, type }) => ({
+    id, name, fileName, fileSize, thumbnail, type,
   }));
 }
 
-// Animations
-export async function saveAnimation(anim: StoredAnimation): Promise<void> {
-  const db = await getDB();
-  await db.put(ANIMS_STORE, anim);
-}
-
-export async function getAllAnimations(): Promise<StoredAnimation[]> {
-  const db = await getDB();
-  return db.getAll(ANIMS_STORE);
-}
-
-export async function deleteAnimation(id: string): Promise<void> {
-  const db = await getDB();
-  await db.delete(ANIMS_STORE, id);
-}
-
-// Utils
 export function generateId(): string {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
