@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { DropZone } from '../components/DropZone';
@@ -19,6 +19,7 @@ export function Room() {
   const navigate = useNavigate();
   const { models, addModelFromFile, deleteModelById, refresh } = useModels();
   const { animations: libraryAnims, addAnimationFromFile, deleteAnimationById } = useAnimationLibrary();
+  const animInputRef = useRef<HTMLInputElement>(null);
   const [viewing, setViewing] = useState<StoredModel | null>(null);
   const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr'>('3d');
   const [modelScale, setModelScale] = useState(100);
@@ -266,46 +267,6 @@ export function Room() {
                 })}
               </div>
 
-              {/* Animation Library */}
-              <div style={{ marginTop: 20, borderTop: '1px solid #333', paddingTop: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-                  <h3 style={{ color: '#888', margin: 0, fontSize: 14 }}>🎬 Animation Library</h3>
-                  <label style={{
-                    background: '#6c63ff', color: '#fff', border: 'none', borderRadius: 8,
-                    padding: '6px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600,
-                  }}>
-                    + Upload
-                    <input type="file" accept=".glb,.gltf,.fbx" style={{ display: 'none' }}
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (file) await addAnimationFromFile(file);
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
-                </div>
-                {libraryAnims.length === 0 ? (
-                  <div style={{ color: '#555', fontSize: 13 }}>
-                    Lade GLB-Dateien mit Animationen hoch (z.B. von Mixamo)
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {libraryAnims.map((a) => (
-                      <div key={a.id} style={{
-                        background: 'rgba(255,255,255,0.08)', borderRadius: 10,
-                        padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8,
-                      }}>
-                        <span style={{ fontSize: 14 }}>🎬 {a.name}</span>
-                        <span style={{ color: '#666', fontSize: 11 }}>{(a.fileSize / 1024).toFixed(0)}KB</span>
-                        <button onClick={() => deleteAnimationById(a.id)} style={{
-                          background: '#d32f2f', color: '#fff', border: 'none', borderRadius: 4,
-                          padding: '2px 6px', fontSize: 11, cursor: 'pointer',
-                        }}>✕</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
             </div>
           </>
         ) : (
@@ -407,9 +368,46 @@ export function Room() {
       <div style={{ display: 'flex', gap: 24, padding: 24, flexWrap: 'wrap' }}>
         {/* Left: Upload + QR */}
         <div style={{ flex: '0 0 320px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <DropZone onFile={handleFile} onAnimationFile={async (file) => { await addAnimationFromFile(file); }} />
+          {/* Model Upload */}
+          <DropZone onFile={handleFile} />
 
-          {/* Animation Library */}
+          {/* Animation Upload */}
+          <div
+            onClick={() => animInputRef.current?.click()}
+            style={{
+              border: '2px dashed #555',
+              borderRadius: 16,
+              padding: '24px 16px',
+              textAlign: 'center',
+              cursor: 'pointer',
+              background: 'rgba(255,255,255,0.03)',
+            }}
+          >
+            <input
+              ref={animInputRef}
+              type="file"
+              accept=".fbx"
+              multiple
+              style={{ display: 'none' }}
+              onChange={async (e) => {
+                if (e.target.files) {
+                  for (let i = 0; i < e.target.files.length; i++) {
+                    await addAnimationFromFile(e.target.files[i]);
+                  }
+                }
+                e.target.value = '';
+              }}
+            />
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🎬</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: '#fff', marginBottom: 4 }}>
+              Animationen hochladen
+            </div>
+            <div style={{ fontSize: 12, color: '#666' }}>
+              FBX-Dateien (z.B. von Mixamo)
+            </div>
+          </div>
+
+          {/* Uploaded Animations List */}
           {libraryAnims.length > 0 && (
             <div style={{ background: '#16162a', borderRadius: 12, padding: 12 }}>
               <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>🎬 Animationen ({libraryAnims.length})</div>
@@ -417,13 +415,14 @@ export function Room() {
                 {libraryAnims.map((a) => (
                   <div key={a.id} style={{
                     background: 'rgba(255,255,255,0.08)', borderRadius: 8,
-                    padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 6,
                     fontSize: 12, color: '#ccc',
                   }}>
                     🎬 {a.name}
+                    <span style={{ color: '#666' }}>{(a.fileSize / 1024).toFixed(0)}KB</span>
                     <button onClick={() => deleteAnimationById(a.id)} style={{
-                      background: 'none', color: '#888', border: 'none',
-                      cursor: 'pointer', fontSize: 11, padding: 0,
+                      background: '#d32f2f', color: '#fff', border: 'none',
+                      borderRadius: 4, padding: '1px 5px', fontSize: 10, cursor: 'pointer',
                     }}>✕</button>
                   </div>
                 ))}
