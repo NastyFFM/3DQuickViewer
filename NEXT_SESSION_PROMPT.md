@@ -4,30 +4,38 @@ Kopiere diesen Text als ersten Prompt in eine neue Claude Code Session:
 
 ---
 
-Ich arbeite an **3DQuickViewer** — einer P2P Web-App zum Teilen und Betrachten von 3D-Modellen in VR/AR. Repo: https://github.com/NastyFFM/3DQuickViewer, Live: https://nastyffm.github.io/3DQuickViewer/
+Ich arbeite an **3DQuickViewer** — einer P2P Web-App zum Teilen und Betrachten von 3D-Modellen in VR/AR auf Meta Quest. Repo: https://github.com/NastyFFM/3DQuickViewer, Live: https://nastyffm.github.io/3DQuickViewer/
 
-## Aktueller Stand
-- React + Three.js + Vite App, deployed auf GitHub Pages (HTTPS)
-- WebRTC P2P Transfer via Socket.IO Signaling Server (Railway: web-production-84380f.up.railway.app)
-- 3D-Viewer (Three.js), VR (WebXR/Quest), AR (Google model-viewer) — 3D und VR funktionieren
-- IndexedDB lokale Galerie, Drag&Drop Upload, QR-Code Sharing, persistente Raeume
-- Lies `IMPLEMENTATION.md` fuer die volle Doku
+## Aktueller Stand (v51)
+- React + Three.js + Vite, deployed auf GitHub Pages (HTTPS)
+- WebRTC P2P Transfer via Socket.IO Signaling (Railway)
+- 3D-Viewer, XR (AR mit Grab), VR (mit Grab), AR (model-viewer)
+- Room Scan mit Hit-Test Grid
+- IndexedDB Galerie, Drag&Drop Upload, QR-Code Sharing
+- Occlusion Culling + Haende Toggle
+- Animation Library (FBX Upload, Mixamo Support)
+- Scale Slider (Echtzeit)
+- XR Galerie-Kacheln zum Modell-Wechsel ohne XR zu verlassen
+- Lies `IMPLEMENTATION.md` fuer volle Doku
 
-## Wichtigstes offenes Problem: AR funktioniert nicht
-Die AR-Ansicht (model-viewer) startet die Kamera auf dem Handy, aber das 3D-Objekt wird nicht platziert. Das Problem: Blob-URLs (aus IndexedDB geladene Modelle) funktionieren nicht mit Scene Viewer (Android) und Quick Look (iOS). Nur WebXR AR kann Blob-URLs nutzen, aber viele Handys unterstuetzen das nicht.
+## WICHTIGSTE AUFGABE: FBX Animationen wie Modelle behandeln
 
-Moegliche Loesungen:
-1. **Service Worker als lokaler File-Server** — registriere einen SW der Blob-URLs unter einer echten URL bereitstellt (z.B. `/ar-model/model.glb`)
-2. **Temporaerer Upload** — Modell kurzzeitig auf einen Server laden und die URL an model-viewer geben
-3. **WebXR-only AR** — nur `ar-modes="webxr"` nutzen (funktioniert mit Blob-URLs, aber weniger Geraete unterstuetzt)
+Aktuell werden FBX-Animationen separat in einem eigenen IndexedDB Store gespeichert und nur als kleine Chips angezeigt. Der User will:
+
+1. **FBX-Animationen in der gleichen Galerie wie Modelle** — eigene Kacheln mit Ansehen/Speichern/Loeschen/Senden Buttons
+2. **P2P Transfer fuer Animationen** — genau wie Modelle per WebRTC von Geraet zu Geraet senden
+3. **Animationen auf Modelle anwenden** — in der XR-Ansicht soll man eine Animation auswaehlen und auf das aktuelle Modell anwenden koennen
+
+Ansatz:
+- Animationen als eigenen Typ in der ModelGallery anzeigen (mit 🎬 Icon statt 🧊)
+- P2P Transfer erweitern: neue Message-Types `animation-list`, `animation-request`, `animation-chunk`, etc.
+- Oder einfacher: Animationen als StoredModel mit einem `type: 'animation'` Flag speichern und das existierende Transfer-System nutzen
 
 ## Weitere offene Punkte
-- Thumbnails/Previews in der Modell-Galerie
-- Upload-Fortschrittsbalken
-- Binary Transfer statt Base64 (33% effizienter)
-- Alte Template-Assets aufraemen (hero.png, react.svg, vite.svg)
-- Event-basiertes UI-Refresh statt 2s-Polling nach Model-Empfang
+- Dateitransfer bricht bei >12MB ab (Backpressure funktioniert nicht zuverlaessig)
+- Version-Nummer v51 unten rechts anzeigen (bereits implementiert)
+- IMPLEMENTATION.md und NEXT_SESSION_PROMPT.md aktualisieren
 
-Starte mit dem AR-Fix (Service Worker Ansatz ist vermutlich der beste) und arbeite dann die weiteren Punkte ab.
+Starte mit dem FBX-als-Modell-behandeln Feature.
 
 ---
