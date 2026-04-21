@@ -11,23 +11,22 @@ let dbPromise: Promise<IDBPDatabase> | null = null;
 function getDB() {
   if (!dbPromise) {
     dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db, oldVersion, _newVersion, tx) {
+      async upgrade(db, oldVersion, _newVersion, tx) {
         if (!db.objectStoreNames.contains(MODELS_STORE)) {
           db.createObjectStore(MODELS_STORE, { keyPath: 'id' });
         }
         if (!db.objectStoreNames.contains(ANIMS_STORE)) {
           db.createObjectStore(ANIMS_STORE, { keyPath: 'id' });
         }
-        if (oldVersion < 3) {
+        if (oldVersion > 0 && oldVersion < 3) {
           // Migrate old animations into the unified models store
           const modelsStore = tx.objectStore(MODELS_STORE);
           const animsStore = tx.objectStore(ANIMS_STORE);
-          animsStore.getAll().then((anims) => {
-            for (const a of anims) {
-              modelsStore.put({ ...a, type: 'animation' });
-            }
-            animsStore.clear();
-          });
+          const anims = await animsStore.getAll();
+          for (const a of anims) {
+            await modelsStore.put({ ...a, type: 'animation' });
+          }
+          await animsStore.clear();
         }
       },
     });
