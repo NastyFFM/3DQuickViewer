@@ -1,24 +1,18 @@
 import { useRef, useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
-import { useModelAnimation } from '../hooks/useModelAnimation';
 import { createXRStore, XR, XROrigin } from '@react-three/xr';
+import { useModelAnimation } from '../hooks/useModelAnimation';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 
-// 4 store combos: hands on/off × depth on/off
-const stores = {
-  'hands-depth': createXRStore({ hand: { touchPointer: true, rayPointer: true }, controller: { rayPointer: true }, depthSensing: true }),
-  'hands-nodepth': createXRStore({ hand: { touchPointer: true, rayPointer: true }, controller: { rayPointer: true } }),
-  'nohands-depth': createXRStore({ hand: false, controller: { rayPointer: true }, depthSensing: true }),
-  'nohands-nodepth': createXRStore({ hand: false, controller: { rayPointer: true } }),
-};
-
-function getStore(hands: boolean, depth: boolean) {
-  const key = `${hands ? 'hands' : 'nohands'}-${depth ? 'depth' : 'nodepth'}` as keyof typeof stores;
-  return stores[key];
-}
+// Single store with all features enabled
+const store = createXRStore({
+  hand: { touchPointer: true, rayPointer: true },
+  controller: { rayPointer: true },
+  depthSensing: true,
+});
 
 interface XRViewerProps {
   modelData: ArrayBuffer;
@@ -42,11 +36,6 @@ function centerAndScale(object: THREE.Object3D) {
   object.scale.multiplyScalar(scale);
 }
 
-/**
- * Same grab pattern as VRScene but for AR (immersive-ar).
- * Model appears in front of the user in the real world.
- * No floor/grid — you see the real environment through the camera.
- */
 function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null, animationLoop = true, onAnimationsFound }: {
   modelData: ArrayBuffer; fileName: string; scale?: number;
   activeAnimation?: string | null; animationLoop?: boolean;
@@ -83,9 +72,7 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
       } else if (ext === 'stl') {
         const loader = new STLLoader();
         const geometry = loader.parse(modelData);
-        const material = new THREE.MeshStandardMaterial({
-          color: 0x888888, metalness: 0.3, roughness: 0.6,
-        });
+        const material = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.3, roughness: 0.6 });
         const mesh = new THREE.Mesh(geometry, material);
         centerAndScale(mesh);
         setObject(mesh);
@@ -95,25 +82,20 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
     }
   }, [modelData, fileName]);
 
-  // Setup XR controller grab events — identical to VRScene
   useEffect(() => {
     const renderer = gl as THREE.WebGLRenderer;
-
     function onSelectStart(this: THREE.XRTargetRaySpace) {
       const controller = this;
       if (!groupRef.current) return;
-
       tempMatrix.current.identity().extractRotation(controller.matrixWorld);
       raycaster.current.ray.origin.setFromMatrixPosition(controller.matrixWorld);
       raycaster.current.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix.current);
-
       const intersects = raycaster.current.intersectObject(groupRef.current, true);
       if (intersects.length > 0) {
         controller.attach(groupRef.current);
         grabbedBy.current = controller;
       }
     }
-
     function onSelectEnd(this: THREE.XRTargetRaySpace) {
       const controller = this;
       if (grabbedBy.current === controller && groupRef.current) {
@@ -121,34 +103,26 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
         grabbedBy.current = null;
       }
     }
-
-    const controller0 = renderer.xr.getController(0);
-    const controller1 = renderer.xr.getController(1);
-
-    controller0.addEventListener('selectstart', onSelectStart);
-    controller0.addEventListener('selectend', onSelectEnd);
-    controller1.addEventListener('selectstart', onSelectStart);
-    controller1.addEventListener('selectend', onSelectEnd);
-
-    scene.add(controller0);
-    scene.add(controller1);
-
+    const c0 = renderer.xr.getController(0);
+    const c1 = renderer.xr.getController(1);
+    c0.addEventListener('selectstart', onSelectStart);
+    c0.addEventListener('selectend', onSelectEnd);
+    c1.addEventListener('selectstart', onSelectStart);
+    c1.addEventListener('selectend', onSelectEnd);
+    scene.add(c0); scene.add(c1);
     return () => {
-      controller0.removeEventListener('selectstart', onSelectStart);
-      controller0.removeEventListener('selectend', onSelectEnd);
-      controller1.removeEventListener('selectstart', onSelectStart);
-      controller1.removeEventListener('selectend', onSelectEnd);
-      scene.remove(controller0);
-      scene.remove(controller1);
+      c0.removeEventListener('selectstart', onSelectStart);
+      c0.removeEventListener('selectend', onSelectEnd);
+      c1.removeEventListener('selectstart', onSelectStart);
+      c1.removeEventListener('selectend', onSelectEnd);
+      scene.remove(c0); scene.remove(c1);
     };
   }, [gl, scene]);
 
-  // Animation
   useModelAnimation(object, animations, activeAnimation ?? null, animationLoop ?? true);
 
   if (!object) return null;
 
-  // Spawn in front of user, slightly below eye level
   return (
     <group ref={groupRef} position={[0, 0.8, -1]}>
       <group scale={[scale, scale, scale]}>
@@ -158,8 +132,27 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
   );
 }
 
-export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound, depthOcclusion = true, showHands = true }: XRViewerProps) {
-  const store = getStore(showHands, depthOcclusion);
+/**
+ * Hides/shows XR hand models at runtime by traversing the XR scene.
+ */
+function HandVisibility({ visible }: { visible: boolean }) {
+  const { gl } = useThree();
+
+  useEffect(() => {
+    const renderer = gl as THREE.WebGLRenderer;
+    // Hand models are children of getHand(0) and getHand(1)
+    for (let i = 0; i < 2; i++) {
+      try {
+        const hand = renderer.xr.getHand(i);
+        if (hand) hand.visible = visible;
+      } catch {}
+    }
+  }, [gl, visible]);
+
+  return null;
+}
+
+export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true }: XRViewerProps) {
   const [xrSupported, setXrSupported] = useState(false);
 
   useEffect(() => {
@@ -179,19 +172,11 @@ export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, ac
         <button
           onClick={() => store.enterAR()}
           style={{
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            zIndex: 10,
-            background: '#6c63ff',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 16,
-            padding: '18px 36px',
-            fontSize: 20,
-            fontWeight: 700,
-            cursor: 'pointer',
+            position: 'absolute', top: '50%', left: '50%',
+            transform: 'translate(-50%, -50%)', zIndex: 10,
+            background: '#6c63ff', color: '#fff', border: 'none',
+            borderRadius: 16, padding: '18px 36px', fontSize: 20,
+            fontWeight: 700, cursor: 'pointer',
             boxShadow: '0 4px 24px rgba(108,99,255,0.4)',
           }}
         >
@@ -201,34 +186,22 @@ export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, ac
 
       {!xrSupported && (
         <div style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
-          zIndex: 10,
-          color: '#888',
-          textAlign: 'center',
-          padding: 24,
-          fontSize: 16,
+          position: 'absolute', top: '50%', left: '50%',
+          transform: 'translate(-50%, -50%)', zIndex: 10,
+          color: '#888', textAlign: 'center', padding: 24, fontSize: 16,
         }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>📱</div>
           <div>WebXR AR wird auf diesem Geraet nicht unterstuetzt.</div>
-          <div style={{ fontSize: 13, color: '#666', marginTop: 8 }}>
-            Benoetigt Chrome auf Android mit ARCore oder Quest Browser.
-          </div>
         </div>
       )}
 
-      <Canvas
-        key={`${depthOcclusion ? 'd' : 'nd'}-${showHands ? 'h' : 'nh'}`}
-        style={{ width: '100%', height: '100%' }}
-        camera={{ position: [0, 1.6, 2], fov: 60 }}
-      >
+      <Canvas style={{ width: '100%', height: '100%' }} camera={{ position: [0, 1.6, 2], fov: 60 }}>
         <XR store={store}>
           <ambientLight intensity={1} />
           <directionalLight position={[5, 5, 5]} intensity={1.5} />
           <XROrigin />
           <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} />
+          <HandVisibility visible={showHands} />
         </XR>
       </Canvas>
     </div>

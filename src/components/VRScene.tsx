@@ -8,17 +8,11 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 
-const stores = {
-  'hands-depth': createXRStore({ hand: { touchPointer: true, rayPointer: true }, controller: { rayPointer: true }, depthSensing: true }),
-  'hands-nodepth': createXRStore({ hand: { touchPointer: true, rayPointer: true }, controller: { rayPointer: true } }),
-  'nohands-depth': createXRStore({ hand: false, controller: { rayPointer: true }, depthSensing: true }),
-  'nohands-nodepth': createXRStore({ hand: false, controller: { rayPointer: true } }),
-};
-
-function getStore(hands: boolean, depth: boolean) {
-  const key = `${hands ? 'hands' : 'nohands'}-${depth ? 'depth' : 'nodepth'}` as keyof typeof stores;
-  return stores[key];
-}
+const store = createXRStore({
+  hand: { touchPointer: true, rayPointer: true },
+  controller: { rayPointer: true },
+  depthSensing: true,
+});
 
 interface VRSceneProps {
   modelData: ArrayBuffer;
@@ -162,6 +156,17 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
   );
 }
 
+function HandVisibility({ visible }: { visible: boolean }) {
+  const { gl } = useThree();
+  useEffect(() => {
+    const renderer = gl as THREE.WebGLRenderer;
+    for (let i = 0; i < 2; i++) {
+      try { const hand = renderer.xr.getHand(i); if (hand) hand.visible = visible; } catch {}
+    }
+  }, [gl, visible]);
+  return null;
+}
+
 function Floor() {
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
@@ -177,8 +182,7 @@ function GridFloor() {
   );
 }
 
-export function VRScene({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, depthOcclusion = true, showHands = true }: VRSceneProps) {
-  const store = getStore(showHands, depthOcclusion);
+export function VRScene({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true }: VRSceneProps) {
   const [vrSupported, setVrSupported] = useState(false);
 
   useEffect(() => {
@@ -212,12 +216,13 @@ export function VRScene({ modelData, fileName, scale = 1, activeAnimation, anima
           🥽 Enter VR
         </button>
       )}
-      <Canvas key={`${depthOcclusion ? 'd' : 'nd'}-${showHands ? 'h' : 'nh'}`} camera={{ position: [0, 1.6, 2], fov: 60 }}>
+      <Canvas camera={{ position: [0, 1.6, 2], fov: 60 }}>
         <XR store={store}>
           <ambientLight intensity={0.6} />
           <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
           <XROrigin />
           <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} />
+          <HandVisibility visible={showHands} />
           <Floor />
           <GridFloor />
           <Environment preset="city" />
