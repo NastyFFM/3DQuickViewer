@@ -3,7 +3,8 @@ import type { PeerMessage, ModelMeta, ModelChunk, StoredModel } from '../types';
 import { getModel, getAllModels, saveModel } from './storage';
 
 const SIGNALING_SERVER = 'https://web-production-84380f.up.railway.app';
-const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+const CHUNK_SIZE = 256 * 1024; // 256KB chunks
+const MAX_BUFFERED = 1024 * 1024; // Wait when buffer exceeds 1MB
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 type OnModelList = (models: ModelMeta[]) => void;
@@ -191,6 +192,13 @@ export class RoomPeer {
     };
   }
 
+  // Wait until the DataChannel buffer drains below threshold
+  private async waitForBuffer(channel: RTCDataChannel): Promise<void> {
+    while (channel.bufferedAmount > MAX_BUFFERED) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
   private sendToPeer(peerId: string, msg: PeerMessage) {
     const wrapper = this.peers.get(peerId);
     if (wrapper?.channel?.readyState === 'open') {
@@ -301,6 +309,9 @@ export class RoomPeer {
     const model = await getModel(modelId);
     if (!model) return;
 
+    const wrapper = this.peers.get(peerId);
+    if (!wrapper?.channel || wrapper.channel.readyState !== 'open') return;
+
     const meta: ModelMeta = {
       id: model.id,
       name: model.name,
@@ -315,6 +326,9 @@ export class RoomPeer {
     const totalChunks = Math.ceil(bytes.length / CHUNK_SIZE);
 
     for (let i = 0; i < totalChunks; i++) {
+      // Wait for buffer to drain before sending next chunk
+      await this.waitForBuffer(wrapper.channel);
+
       const start = i * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, bytes.length);
       const chunkBytes = bytes.slice(start, end);
@@ -333,10 +347,6 @@ export class RoomPeer {
       };
 
       this.sendToPeer(peerId, { type: 'model-chunk', payload: chunk });
-
-      if (i % 10 === 9) {
-        await new Promise((r) => setTimeout(r, 10));
-      }
     }
 
     this.sendToPeer(peerId, { type: 'model-complete', payload: modelId });
@@ -360,6 +370,13 @@ export class RoomPeer {
     const totalChunks = Math.ceil(bytes.length / CHUNK_SIZE);
 
     for (let i = 0; i < totalChunks; i++) {
+      // Wait for all channels to drain
+      for (const wrapper of this.peers.values()) {
+        if (wrapper.channel?.readyState === 'open') {
+          await this.waitForBuffer(wrapper.channel);
+        }
+      }
+
       const start = i * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, bytes.length);
       const chunkBytes = bytes.slice(start, end);
@@ -378,10 +395,6 @@ export class RoomPeer {
       };
 
       this.broadcast({ type: 'model-chunk', payload: chunk });
-
-      if (i % 10 === 9) {
-        await new Promise((r) => setTimeout(r, 10));
-      }
     }
 
     this.broadcast({ type: 'model-complete', payload: modelId });
