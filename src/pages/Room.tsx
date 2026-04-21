@@ -89,9 +89,12 @@ export function Room() {
     }
   }, [lastReceived, refresh]);
 
-  // NO periodic polling — it reads all ArrayBuffers from IndexedDB
-  // and blocks the main thread, causing XR tracking stutter.
-  // Models refresh on: mount, file upload, P2P receive, delete.
+  // Light polling fallback — only when NOT in XR (avoids tracking stutter)
+  useEffect(() => {
+    if (viewMode === 'xr' || viewMode === 'vr') return;
+    const interval = setInterval(refresh, 5000);
+    return () => clearInterval(interval);
+  }, [refresh, viewMode]);
 
   const shareUrl = typeof window !== 'undefined'
     ? `${window.location.origin}${import.meta.env.BASE_URL}room/${roomId}`
