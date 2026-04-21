@@ -28,8 +28,6 @@ export function Room() {
   const [animationNames, setAnimationNames] = useState<string[]>([]);
   const [activeAnimation, setActiveAnimation] = useState<string | null>(null);
   const [animationLoop, setAnimationLoop] = useState(true);
-  // Library animation clips (parsed from uploaded GLBs)
-  const [libraryClipNames, setLibraryClipNames] = useState<string[]>([]);
   const [showScan, setShowScan] = useState(false);
   const [isHost] = useState(() => {
     // First visitor to a room becomes host
