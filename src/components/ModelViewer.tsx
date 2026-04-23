@@ -7,20 +7,17 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 import { useModelAnimation } from '../hooks/useModelAnimation';
-import { buildAnimationClip, parseMocapPayload } from '../lib/mocapExport';
+import {
+  buildAnimationClip,
+  parseMocapPayload,
+  MOCAP_CLIP_PREFIX,
+  type LibraryMocap,
+} from '../lib/mocapExport';
 import { getMocapAudio } from '../lib/storage';
 
-/** Prefix used on mocap clip names so the animation picker + audio-sync
- * logic can identify them apart from FBX/GLB library animations. */
-export const MOCAP_CLIP_PREFIX = '🎬🔊 ';
-
-export interface LibraryMocap {
-  id: string;
-  name: string;
-  /** UTF-8 encoded MocapPayload JSON */
-  data: ArrayBuffer;
-  hasAudio: boolean;
-}
+// Re-export for backwards compat with any consumers that used to import these
+// from this module.
+export { MOCAP_CLIP_PREFIX, type LibraryMocap };
 
 interface ModelViewerProps {
   modelData: ArrayBuffer;

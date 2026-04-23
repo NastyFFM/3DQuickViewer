@@ -3,10 +3,15 @@ import {
   getAllModels, saveModel, deleteModel as removeModel,
   saveMocapAudio, deleteMocapAudio, generateId,
 } from '../lib/storage';
+import { base64ToUint8Array } from '../lib/mocapExport';
 import type { StoredModel, ItemType } from '../types';
 
 export function guessTypeFromFileName(fileName: string): ItemType {
-  const ext = fileName.toLowerCase().split('.').pop();
+  const lower = fileName.toLowerCase();
+  // Any .json with ".mocap" in the name — tolerates browser-download dupes
+  // like `foo.mocap (1).json` and renamed variants.
+  if (lower.endsWith('.json') && lower.includes('.mocap')) return 'mocap';
+  const ext = lower.split('.').pop();
   return ext === 'fbx' ? 'animation' : 'model';
 }
 
@@ -34,6 +39,69 @@ export function useModels() {
       createdAt: Date.now(),
       roomId,
       type: typeOverride ?? guessTypeFromFileName(file.name),
+    };
+    await saveModel(model);
+    await refresh();
+    return model;
+  }, [refresh]);
+
+  /** Import a .mocap.json file previously exported via "Speichern". If the
+   * file contains an embedded `audio` field (produced by recent exports),
+   * extract + store the audio blob separately and strip the field from the
+   * stored JSON — so the in-IDB payload stays lean. */
+  const addMocapFromJson = useCallback(async (file: File, roomId?: string): Promise<StoredModel> => {
+    const rawData = await file.arrayBuffer();
+    let parsed: { startTime?: number; frames?: Array<{ t?: number }>; audio?: { mimeType: string; data: string } };
+    try {
+      const text = new TextDecoder().decode(rawData);
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error('Kein gueltiges JSON');
+    }
+    if (!parsed || !Array.isArray(parsed.frames) || parsed.frames.length === 0) {
+      throw new Error('Kein gueltiges Mocap-JSON (frames[] fehlt oder leer)');
+    }
+
+    const lastFrame = parsed.frames[parsed.frames.length - 1];
+    const durationSec = typeof lastFrame?.t === 'number' ? lastFrame.t : 0;
+
+    const id = generateId();
+    let hasAudio = false;
+    let storedData: ArrayBuffer = rawData;
+
+    // Extract embedded audio → separate IDB blob. Strip from the JSON so
+    // subsequent storage/transfer doesn't duplicate it.
+    if (parsed.audio && typeof parsed.audio.data === 'string' && parsed.audio.mimeType) {
+      try {
+        const bytes = base64ToUint8Array(parsed.audio.data);
+        // slice() detaches into a fresh ArrayBuffer (not SharedArrayBuffer),
+        // which the Blob constructor's TS type requires under strict settings.
+        const blob = new Blob([bytes.slice().buffer], { type: parsed.audio.mimeType });
+        await saveMocapAudio(id, blob);
+        hasAudio = true;
+        const { audio: _audio, ...rest } = parsed;
+        void _audio;
+        storedData = new TextEncoder().encode(JSON.stringify(rest)).buffer as ArrayBuffer;
+      } catch (e) {
+        console.warn('[Mocap import] audio extract failed:', e);
+      }
+    }
+
+    // Strip `.mocap(...)?.json` suffix (incl. browser-download dupes like "(1)")
+    const displayName = file.name
+      .replace(/\.mocap(\s*\(\d+\))?\.json$/i, '')
+      .replace(/\.[^.]+$/, '');
+    const model: StoredModel = {
+      id,
+      name: displayName,
+      fileName: file.name,
+      fileSize: storedData.byteLength,
+      data: storedData,
+      createdAt: Date.now(),
+      roomId,
+      type: 'mocap',
+      hasAudio,
+      durationSec,
     };
     await saveModel(model);
     await refresh();
@@ -85,6 +153,6 @@ export function useModels() {
   return {
     models, animations, mocaps, items,
     loading, refresh,
-    addModelFromFile, addMocapRecording, deleteModelById,
+    addModelFromFile, addMocapFromJson, addMocapRecording, deleteModelById,
   };
 }

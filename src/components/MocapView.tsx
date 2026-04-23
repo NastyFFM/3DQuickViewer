@@ -117,6 +117,11 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
   const [isRecording, setIsRecording] = useState(false);
   const [recordStartMs, setRecordStartMs] = useState<number | null>(null);
   const [recordElapsedMs, setRecordElapsedMs] = useState(0);
+  // Auto-stop duration in seconds. null = free recording (manual stop).
+  // Presets below + a numeric input for custom lengths.
+  const [recordDurationSec, setRecordDurationSec] = useState<number | null>(null);
+  const [customLengthInput, setCustomLengthInput] = useState('');
+  const autoStopTimerRef = useRef<number | null>(null);
   const [pendingSave, setPendingSave] = useState<{
     clipTracksPayload: ArrayBuffer;
     audioBlob: Blob;
@@ -172,6 +177,23 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
     return () => clearInterval(id);
   }, [isRecording, recordStartMs]);
 
+  // Unmount cleanup: cancel any pending auto-stop and halt the MediaRecorder.
+  // Without this, leaving the Mocap tab mid-record would fire a save dialog
+  // after the component is gone.
+  useEffect(() => {
+    return () => {
+      if (autoStopTimerRef.current !== null) {
+        clearTimeout(autoStopTimerRef.current);
+        autoStopTimerRef.current = null;
+      }
+      recordingActiveRef.current = false;
+      const rec = mediaRecorderRef.current;
+      if (rec && rec.state !== 'inactive') {
+        try { rec.stop(); } catch { /* ignore */ }
+      }
+    };
+  }, []);
+
   const pickAudioMime = (): string => {
     const candidates = [
       'audio/webm;codecs=opus',
@@ -216,10 +238,25 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
     setIsRecording(true);
     setRecordStartMs(performance.now());
     setRecordElapsedMs(0);
+
+    // Auto-stop after the selected duration so the actor can focus on
+    // performance instead of watching a clock. Cleaned up in stopRecording().
+    if (recordDurationSec !== null && recordDurationSec > 0) {
+      autoStopTimerRef.current = window.setTimeout(() => {
+        autoStopTimerRef.current = null;
+        stopRecording();
+      }, recordDurationSec * 1000);
+    }
   };
 
   const stopRecording = () => {
-    if (!isRecording) return;
+    // Ref-based guard so the auto-stop setTimeout callback (which captured a
+    // stale closure over `isRecording`) still correctly no-ops on double calls.
+    if (!recordingActiveRef.current) return;
+    if (autoStopTimerRef.current !== null) {
+      clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
+    }
     recordingActiveRef.current = false;
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
@@ -610,6 +647,68 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
         >
           🔒 Kalibrieren
         </button>
+        <div style={{
+          display: 'flex', gap: 4, padding: '4px 6px', borderRadius: 8,
+          background: 'rgba(255,255,255,0.06)', alignItems: 'center',
+        }}>
+          <span style={{ color: '#888', fontSize: 11, marginRight: 2 }}>Dauer:</span>
+          {([null, 5, 10, 20] as const).map((len) => {
+            const label = len === null ? 'Frei' : `${len}s`;
+            const active = recordDurationSec === len;
+            return (
+              <button
+                key={label}
+                onClick={() => {
+                  setRecordDurationSec(len);
+                  if (len !== null) setCustomLengthInput('');
+                }}
+                disabled={isRecording}
+                style={{
+                  padding: '4px 10px', borderRadius: 6,
+                  background: active ? '#6c63ff' : 'rgba(255,255,255,0.05)',
+                  color: '#fff', border: '1px solid #333', fontSize: 12,
+                  fontWeight: active ? 700 : 500,
+                  cursor: isRecording ? 'default' : 'pointer',
+                  opacity: isRecording ? 0.6 : 1,
+                }}
+                title={len === null ? 'Manuell stoppen' : `Auto-Stop nach ${len}s`}
+              >
+                {label}
+              </button>
+            );
+          })}
+          <input
+            type="number"
+            min={1}
+            max={600}
+            step={1}
+            placeholder="…s"
+            value={customLengthInput}
+            disabled={isRecording}
+            onChange={(e) => {
+              const raw = e.target.value;
+              setCustomLengthInput(raw);
+              const n = parseFloat(raw);
+              if (Number.isFinite(n) && n > 0) {
+                setRecordDurationSec(n);
+              } else if (raw === '') {
+                // Empty input: keep whatever preset was active. If a custom
+                // value was the active selection, fall back to "Frei".
+                if (recordDurationSec !== null && ![5, 10, 20].includes(recordDurationSec)) {
+                  setRecordDurationSec(null);
+                }
+              }
+            }}
+            style={{
+              width: 54, padding: '4px 6px', borderRadius: 6,
+              background: (recordDurationSec !== null && ![5, 10, 20].includes(recordDurationSec))
+                ? '#6c63ff' : 'rgba(255,255,255,0.05)',
+              color: '#fff', border: '1px solid #333', fontSize: 12,
+              fontWeight: 600, textAlign: 'center',
+            }}
+            title="Beliebige Laenge in Sekunden (1–600)"
+          />
+        </div>
         {!isRecording ? (
           <button
             onClick={startRecording}
@@ -673,7 +772,7 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
         </div>
       )}
 
-      {isRecording && (
+      {isRecording && recordDurationSec === null && (
         <div style={{
           position: 'absolute', top: 58, left: '50%', transform: 'translateX(-50%)',
           zIndex: 7, padding: '8px 18px', borderRadius: 20,
@@ -687,6 +786,36 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
             background: '#fff', animation: 'pulse 1s ease-in-out infinite',
           }} />
           REC {formatElapsed(recordElapsedMs)}
+        </div>
+      )}
+
+      {isRecording && recordDurationSec !== null && (
+        <div style={{
+          position: 'absolute', top: '8%', left: '50%', transform: 'translateX(-50%)',
+          zIndex: 7, pointerEvents: 'none',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
+        }}>
+          <div style={{
+            // Half the size of the 3-2-1 countdown (clamp(120px,22vw,260px)).
+            fontSize: 'clamp(60px, 11vw, 130px)', fontWeight: 900, color: '#fff',
+            textShadow: '0 4px 20px rgba(198,40,40,0.9), 0 0 10px rgba(0,0,0,0.6)',
+            lineHeight: 1, fontFamily: 'monospace',
+          }}>
+            {Math.max(0, Math.ceil((recordDurationSec * 1000 - recordElapsedMs) / 1000))}
+          </div>
+          <div style={{
+            padding: '4px 14px', borderRadius: 16,
+            background: 'rgba(198,40,40,0.9)', color: '#fff',
+            fontSize: 12, fontWeight: 700, letterSpacing: 1,
+            display: 'flex', alignItems: 'center', gap: 8,
+            boxShadow: '0 2px 10px rgba(198,40,40,0.5)',
+          }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: '#fff', animation: 'pulse 1s ease-in-out infinite',
+            }} />
+            REC
+          </div>
         </div>
       )}
 

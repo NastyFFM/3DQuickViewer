@@ -17,7 +17,7 @@ import type { StoredModel, ItemType } from '../types';
 export function Room() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { models, animations, mocaps, addModelFromFile, addMocapRecording, deleteModelById, refresh } = useModels();
+  const { models, animations, mocaps, addModelFromFile, addMocapFromJson, addMocapRecording, deleteModelById, refresh } = useModels();
   const [viewing, setViewing] = useState<StoredModel | null>(null);
   const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr' | 'mocap'>('3d');
   const [modelScale, setModelScale] = useState(100);
@@ -51,7 +51,20 @@ export function Room() {
   } = useRoom({ roomId: roomId!, isHost, enabled: !!roomId });
 
   const handleFile = useCallback(async (file: File) => {
-    const ext = file.name.toLowerCase().split('.').pop() ?? '';
+    const lower = file.name.toLowerCase();
+    // Mocap JSON: any .json whose name contains ".mocap" — tolerates dupes
+    // like "(1)" inserted by the browser on re-download.
+    if (lower.endsWith('.json') && lower.includes('.mocap')) {
+      try {
+        await addMocapFromJson(file, roomId);
+        broadcastModelList();
+      } catch (e) {
+        console.error('[Mocap import] failed:', e);
+        alert('Mocap-Import fehlgeschlagen: ' + (e as Error).message);
+      }
+      return;
+    }
+    const ext = lower.split('.').pop() ?? '';
     // Ambiguous formats: ask user. Others (obj/stl) save directly as model.
     if (ext === 'glb' || ext === 'gltf' || ext === 'fbx') {
       setPendingUpload({ file, defaultType: guessTypeFromFileName(file.name) });
@@ -59,7 +72,7 @@ export function Room() {
     }
     await addModelFromFile(file, roomId, 'model');
     broadcastModelList();
-  }, [addModelFromFile, roomId, broadcastModelList]);
+  }, [addModelFromFile, addMocapFromJson, roomId, broadcastModelList]);
 
   const confirmUpload = useCallback(async (type: ItemType) => {
     if (!pendingUpload) return;
@@ -83,12 +96,44 @@ export function Room() {
     await sendModelToPeers(modelId);
   }, [sendModelToPeers]);
 
-  const handleSave = useCallback((model: StoredModel) => {
-    const blob = new Blob([model.data], { type: 'application/octet-stream' });
+  const handleSave = useCallback(async (model: StoredModel) => {
+    let blob: Blob;
+    let filename = model.fileName;
+
+    // Mocap + audio: bundle audio into the JSON under an `audio` field so a
+    // single-file export round-trips through drag-drop without losing sound.
+    if (model.type === 'mocap' && model.hasAudio) {
+      try {
+        const [{ getMocapAudio }, { arrayBufferToBase64 }] = await Promise.all([
+          import('../lib/storage'),
+          import('../lib/mocapExport'),
+        ]);
+        const audio = await getMocapAudio(model.id);
+        if (audio) {
+          const text = new TextDecoder().decode(model.data);
+          const parsed = JSON.parse(text);
+          parsed.audio = {
+            mimeType: audio.mimeType,
+            data: arrayBufferToBase64(audio.data),
+          };
+          const enriched = JSON.stringify(parsed);
+          blob = new Blob([enriched], { type: 'application/json' });
+          if (!/\.json$/i.test(filename)) filename = `${model.name}.mocap.json`;
+        } else {
+          blob = new Blob([model.data], { type: 'application/json' });
+        }
+      } catch (e) {
+        console.warn('[Save] audio-embed failed, falling back to plain JSON:', e);
+        blob = new Blob([model.data], { type: 'application/json' });
+      }
+    } else {
+      blob = new Blob([model.data], { type: 'application/octet-stream' });
+    }
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = model.fileName;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -225,8 +270,8 @@ export function Room() {
 
             <div style={{ height: 1, overflow: 'hidden', opacity: 0 }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
-                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnimations} />}
-                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnimations} />}
+                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnimations} libraryMocaps={libraryMocaps} />}
+                {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnimations} libraryMocaps={libraryMocaps} />}
               </ViewerErrorBoundary>
             </div>
 
@@ -563,7 +608,7 @@ export function Room() {
             </h2>
             <ModelGallery
               localModels={models}
-              remoteModels={remoteModels.filter((m) => m.type !== 'animation')}
+              remoteModels={remoteModels.filter((m) => m.type !== 'animation' && m.type !== 'mocap')}
               transfers={transfers}
               onView={setViewing}
               onDelete={handleDelete}

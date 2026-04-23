@@ -1,6 +1,17 @@
 import { useState, useCallback, useRef } from 'react';
 
-const ALL_EXTENSIONS = ['.glb', '.gltf', '.obj', '.stl', '.fbx'];
+const ALL_EXTENSIONS = ['.glb', '.gltf', '.obj', '.stl', '.fbx', '.json'];
+
+/** True when a filename is recognisable as one of our supported formats.
+ * Mocap JSON is any `.json` that contains `.mocap` somewhere in the name —
+ * this catches browser-download duplicates like `foo.mocap (1).json` and
+ * renamed-but-still-tagged variants. Other `.json` files are rejected. */
+function isAccepted(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.json')) return lower.includes('.mocap');
+  const ext = '.' + lower.split('.').pop();
+  return ALL_EXTENSIONS.includes(ext);
+}
 
 interface DropZoneProps {
   onFile: (file: File) => void;
@@ -18,8 +29,7 @@ export function DropZone({ onFile, disabled }: DropZoneProps) {
     const oversized: string[] = [];
     const valid: File[] = [];
     for (const f of arr) {
-      const ext = '.' + f.name.toLowerCase().split('.').pop();
-      if (!ALL_EXTENSIONS.includes(ext)) {
+      if (!isAccepted(f.name)) {
         invalid.push(f.name);
         continue;
       }
@@ -77,13 +87,13 @@ export function DropZone({ onFile, disabled }: DropZoneProps) {
       />
       <div style={{ fontSize: 48, marginBottom: 16 }}>📦</div>
       <div style={{ fontSize: 18, fontWeight: 600, color: '#fff', marginBottom: 8 }}>
-        3D-Modell oder Animation hierher ziehen
+        Modell, Animation oder Mocap hierher ziehen
       </div>
       <div style={{ fontSize: 14, color: '#888' }}>
         oder klicken zum Auswaehlen
       </div>
       <div style={{ fontSize: 12, color: '#666', marginTop: 8 }}>
-        GLB, GLTF, OBJ, STL — Modelle · FBX — Animationen · max. 100MB
+        GLB, GLTF, OBJ, STL — Modelle · FBX — Animationen · .mocap.json — Mocap · max. 100MB
       </div>
       {error && (
         <div style={{ color: '#ff4444', marginTop: 12, fontSize: 14 }}>{error}</div>

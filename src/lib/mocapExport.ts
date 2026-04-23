@@ -16,10 +16,52 @@ export interface MocapFrame {
 export interface MocapPayload {
   startTime: number;
   frames: MocapFrame[];
+  /** Optional embedded audio. Present when the user exported via "Speichern"
+   * on a mocap with hasAudio=true. Import strips this field back out and
+   * stores the audio blob separately in IndexedDB (mocap-audio store). */
+  audio?: {
+    mimeType: string;
+    /** Base64 encoding of the raw audio bytes (webm/opus, ogg, mp4…). */
+    data: string;
+  };
+}
+
+export function arrayBufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + CHUNK)),
+    );
+  }
+  return btoa(binary);
+}
+
+export function base64ToUint8Array(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 export const MOCAP_FILE_EXT = '.mocap.json';
 export const MOCAP_MIME_TYPE = 'application/x-mocap-json';
+
+/** Prefix used on mocap clip names in the animation picker so they can be
+ * identified apart from model and FBX library animations. */
+export const MOCAP_CLIP_PREFIX = '🎬🔊 ';
+
+/** Shape passed from Room to each viewer for playback of stored mocap
+ * recordings. Viewers lazily parse the JSON + fetch audio from IndexedDB. */
+export interface LibraryMocap {
+  id: string;
+  name: string;
+  /** UTF-8 encoded MocapPayload JSON */
+  data: ArrayBuffer;
+  hasAudio: boolean;
+}
 
 /** Parse a mocap payload (ArrayBuffer of UTF-8 JSON) into frames. */
 export function parseMocapPayload(data: ArrayBuffer): MocapPayload {

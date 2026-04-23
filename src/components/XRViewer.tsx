@@ -7,6 +7,13 @@ import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
+import {
+  buildAnimationClip,
+  parseMocapPayload,
+  MOCAP_CLIP_PREFIX,
+  type LibraryMocap,
+} from '../lib/mocapExport';
+import { getMocapAudio } from '../lib/storage';
 
 // Single store with all features enabled — exported so Room can call enterAR
 // from a real user-gesture handler (preserves transient activation).
@@ -27,6 +34,7 @@ interface XRViewerProps {
   depthOcclusion?: boolean;
   showHands?: boolean;
   libraryAnimations?: { data: ArrayBuffer; fileName: string }[];
+  libraryMocaps?: LibraryMocap[];
 }
 
 function centerAndScale(object: THREE.Object3D) {
@@ -39,11 +47,12 @@ function centerAndScale(object: THREE.Object3D) {
   object.scale.multiplyScalar(scale);
 }
 
-function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null, animationLoop = true, onAnimationsFound, libraryAnimations = [] }: {
+function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null, animationLoop = true, onAnimationsFound, libraryAnimations = [], libraryMocaps = [] }: {
   modelData: ArrayBuffer; fileName: string; scale?: number;
   activeAnimation?: string | null; animationLoop?: boolean;
   onAnimationsFound?: (names: string[]) => void;
   libraryAnimations?: { data: ArrayBuffer; fileName: string }[];
+  libraryMocaps?: LibraryMocap[];
 }) {
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const [animations, setAnimations] = useState<THREE.AnimationClip[]>([]);
@@ -62,9 +71,13 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
           centerAndScale(gltf.scene);
           setObject(gltf.scene);
           if (gltf.animations.length > 0) {
-            // Merge so we don't clobber library clips parsed concurrently.
+            // Merge so we don't clobber library clips or mocap clips parsed
+            // concurrently. Mocap clips get a distinct prefix so we can keep
+            // them across model re-parses too.
             setAnimations((prev) => {
-              const libClips = prev.filter((c) => c.name.startsWith('📚'));
+              const libClips = prev.filter((c) =>
+                c.name.startsWith('📚') || c.name.startsWith(MOCAP_CLIP_PREFIX),
+              );
               const merged = [...gltf.animations, ...libClips];
               onAnimationsFound?.(merged.map((c) => c.name));
               return merged;
@@ -140,6 +153,67 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
     return () => { cancelled = true; };
   }, [libraryAnimations]);
 
+  // Parse mocap recordings and merge into animations. Mirrors ModelViewer's
+  // logic so stored mocap clips appear in the XR animation picker too.
+  const mocapIdByClipNameRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    mocapIdByClipNameRef.current = new Map();
+    if (libraryMocaps.length === 0) return;
+    const mocapClips: THREE.AnimationClip[] = [];
+    for (const m of libraryMocaps) {
+      try {
+        const payload = parseMocapPayload(m.data);
+        const clipName = MOCAP_CLIP_PREFIX + m.name;
+        const clip = buildAnimationClip(payload, clipName);
+        mocapClips.push(clip);
+        if (m.hasAudio) mocapIdByClipNameRef.current.set(clipName, m.id);
+      } catch (err) {
+        console.warn('[XR] Failed to parse mocap:', m.name, err);
+      }
+    }
+    if (mocapClips.length > 0) {
+      setAnimations((prev) => {
+        const keep = prev.filter((c) => !c.name.startsWith(MOCAP_CLIP_PREFIX));
+        const merged = [...keep, ...mocapClips];
+        onAnimationsFound?.(merged.map((c) => c.name));
+        return merged;
+      });
+    }
+  }, [libraryMocaps]);
+
+  // Audio playback synced with the active mocap clip.
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    const stop = () => {
+      if (audioElRef.current) {
+        audioElRef.current.pause();
+        audioElRef.current = null;
+      }
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
+      }
+    };
+    if (!activeAnimation) { stop(); return; }
+    const mocapId = mocapIdByClipNameRef.current.get(activeAnimation);
+    if (!mocapId) { stop(); return; }
+    let cancelled = false;
+    (async () => {
+      const stored = await getMocapAudio(mocapId);
+      if (cancelled || !stored) return;
+      stop();
+      const blob = new Blob([stored.data], { type: stored.mimeType });
+      const url = URL.createObjectURL(blob);
+      audioUrlRef.current = url;
+      const el = new Audio(url);
+      el.loop = animationLoop ?? true;
+      audioElRef.current = el;
+      el.play().catch((e) => console.warn('[XR] audio play failed:', e));
+    })();
+    return () => { cancelled = true; stop(); };
+  }, [activeAnimation, animationLoop]);
+
   useEffect(() => {
     const renderer = gl as THREE.WebGLRenderer;
     function onSelectStart(this: THREE.XRTargetRaySpace) {
@@ -210,7 +284,7 @@ function HandVisibility({ visible }: { visible: boolean }) {
   return null;
 }
 
-export function XRViewer({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true, libraryAnimations = [] }: XRViewerProps) {
+export function XRViewer({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true, libraryAnimations = [], libraryMocaps = [] }: XRViewerProps) {
   const [xrSupported, setXrSupported] = useState(false);
 
   useEffect(() => {
@@ -255,7 +329,7 @@ export function XRViewer({ modelData, fileName, scale = 1, activeAnimation, anim
           <ambientLight intensity={1} />
           <directionalLight position={[5, 5, 5]} intensity={1.5} />
           <XROrigin />
-          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} libraryAnimations={libraryAnimations} />
+          <GrabbableModel modelData={modelData} fileName={fileName} scale={scale} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={onAnimationsFound} libraryAnimations={libraryAnimations} libraryMocaps={libraryMocaps} />
           <HandVisibility visible={showHands} />
         </XR>
       </Canvas>
