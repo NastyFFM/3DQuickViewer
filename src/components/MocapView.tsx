@@ -4,6 +4,11 @@ import { OrbitControls, ContactShadows, Environment, Html } from '@react-three/d
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as THREE from 'three';
 import { PoseLandmarker, FilesetResolver, type NormalizedLandmark, type Landmark } from '@mediapipe/tasks-vision';
+import {
+  PoseStabilizer,
+  DEFAULT_STABILIZER_CONFIG,
+  type PoseStabilizerConfig,
+} from '../lib/poseStabilizer';
 
 // MediaPipe Pose landmark indices (33-point BlazePose topology)
 const L = {
@@ -62,6 +67,12 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
   const poseRef = useRef<PoseRef>({ landmarks: null, worldLandmarks: null });
   const rafRef = useRef<number | null>(null);
+  // Stabiliser lives across renders; config mutations push into it via
+  // updateConfig so we don't re-allocate 99 filters on every slider tick.
+  const stabilizerRef = useRef<PoseStabilizer>(new PoseStabilizer());
+  // Ref mirror of the on/off state so the detection loop (mounted once) can
+  // observe toggle changes without being torn down & restarted.
+  const stabilizerEnabledRef = useRef<boolean>(true);
   // Audio-only stream derived from getUserMedia — fed into MediaRecorder
   // when the user starts a recording.
   const audioStreamRef = useRef<MediaStream | null>(null);
@@ -82,6 +93,34 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
   const [camSize, setCamSize] = useState({ w: 360, h: 270 });
   const [bonesInfo, setBonesInfo] = useState<{ mapping: Record<string, string | null>; all: string[] } | null>(null);
   const [showBones, setShowBones] = useState(false);
+  const [stabilizerEnabled, setStabilizerEnabled] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('3dqv-mocap-stabilizer-on');
+      return raw === null ? true : raw === 'true';
+    } catch { return true; }
+  });
+  const [stabilizerConfig, setStabilizerConfig] = useState<PoseStabilizerConfig>(() => {
+    try {
+      const raw = localStorage.getItem('3dqv-mocap-stabilizer-cfg');
+      if (raw) return { ...DEFAULT_STABILIZER_CONFIG, ...JSON.parse(raw) };
+    } catch { /* fall through */ }
+    return { ...DEFAULT_STABILIZER_CONFIG };
+  });
+  const [showStabilizerPanel, setShowStabilizerPanel] = useState(false);
+  useEffect(() => {
+    try { localStorage.setItem('3dqv-mocap-stabilizer-on', String(stabilizerEnabled)); } catch { /* ignore */ }
+    stabilizerEnabledRef.current = stabilizerEnabled;
+  }, [stabilizerEnabled]);
+  useEffect(() => {
+    try { localStorage.setItem('3dqv-mocap-stabilizer-cfg', JSON.stringify(stabilizerConfig)); } catch { /* ignore */ }
+    stabilizerRef.current.updateConfig(stabilizerConfig);
+  }, [stabilizerConfig]);
+  // When turning the stabilizer back on, reset its internal history so the
+  // first post-toggle frame doesn't see a stale (x_prev, t_prev) pair and
+  // produce a spike.
+  useEffect(() => {
+    if (stabilizerEnabled) stabilizerRef.current.reset();
+  }, [stabilizerEnabled]);
   // Global axis permutation: which MediaPipe axis becomes which Three.js
   // axis when computing per-bone deltas. Cycles through the 6 possible
   // orderings (XYZ identity through ZYX full reverse). Combined with the
@@ -111,6 +150,25 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
   // 0 = never calibrated → no mocap driving. >0 = calibrated; bumping
   // re-captures the rest pose from the current frame.
   const [calibrateToken, setCalibrateToken] = useState(0);
+  // 0..1 while the multi-frame calibration accumulator is filling; null when
+  // idle or after completion. Drives the "Kalibrierung läuft" progress pill.
+  const [calibProgress, setCalibProgress] = useState<number | null>(null);
+  const [hipRotationEnabled, setHipRotationEnabled] = useState<boolean>(() => {
+    try { return localStorage.getItem('3dqv-mocap-hip-rot') !== 'false'; } catch { return true; }
+  });
+  const [locomotionEnabled, setLocomotionEnabled] = useState<boolean>(() => {
+    try { return localStorage.getItem('3dqv-mocap-locomotion') !== 'false'; } catch { return true; }
+  });
+  const hipRotationEnabledRef = useRef<boolean>(hipRotationEnabled);
+  const locomotionEnabledRef = useRef<boolean>(locomotionEnabled);
+  useEffect(() => {
+    hipRotationEnabledRef.current = hipRotationEnabled;
+    try { localStorage.setItem('3dqv-mocap-hip-rot', String(hipRotationEnabled)); } catch { /* ignore */ }
+  }, [hipRotationEnabled]);
+  useEffect(() => {
+    locomotionEnabledRef.current = locomotionEnabled;
+    try { localStorage.setItem('3dqv-mocap-locomotion', String(locomotionEnabled)); } catch { /* ignore */ }
+  }, [locomotionEnabled]);
   type CountdownMode = 'calibrate' | 'record';
   const [countdown, setCountdown] = useState<number | null>(null);
   const [countdownMode, setCountdownMode] = useState<CountdownMode | null>(null);
@@ -413,9 +471,16 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
         const overlay = overlayRef.current;
         if (video && landmarkerRef.current && video.readyState >= 2) {
           try {
-            const res = landmarkerRef.current.detectForVideo(video, performance.now());
+            const tNow = performance.now();
+            const res = landmarkerRef.current.detectForVideo(video, tNow);
             poseRef.current.landmarks = res.landmarks?.[0] ?? null;
-            poseRef.current.worldLandmarks = res.worldLandmarks?.[0] ?? null;
+            const rawWorld = res.worldLandmarks?.[0] ?? null;
+            // Stabilise world landmarks before exposing them downstream.
+            // The overlay still uses the raw normalized landmarks so the
+            // webcam preview stays perfectly aligned with the video.
+            poseRef.current.worldLandmarks = stabilizerEnabledRef.current
+              ? stabilizerRef.current.process(rawWorld, tNow) as unknown as Landmark[] | null
+              : rawWorld;
             if (overlay) drawSkeleton(overlay, video, poseRef.current.landmarks);
           } catch {
             // ignore per-frame errors
@@ -451,6 +516,9 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
             axisPerm={axisPerm}
             recordingActiveRef={recordingActiveRef}
             recordBufferRef={recordBufferRef}
+            onCalibrationProgress={setCalibProgress}
+            hipRotationEnabledRef={hipRotationEnabledRef}
+            locomotionEnabledRef={locomotionEnabledRef}
           />
         </group>
         <ContactShadows position={[0, -1, 0]} opacity={0.4} blur={2} />
@@ -577,6 +645,35 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
           </button>
         )}
         <div style={{
+          display: 'flex', gap: 4, alignItems: 'center',
+          padding: '4px 6px', borderRadius: 8,
+          background: 'rgba(255,255,255,0.06)',
+        }}>
+          <button
+            onClick={() => setStabilizerEnabled((v) => !v)}
+            title={stabilizerEnabled ? 'Stabilizer aktiv — ausschalten fuer A/B-Vergleich' : 'Rohe MP-Landmarks — einschalten fuer glattere Posen'}
+            style={{
+              padding: '4px 10px', borderRadius: 6,
+              background: stabilizerEnabled ? '#2d6a4f' : 'rgba(255,255,255,0.05)',
+              color: '#fff', border: '1px solid #333', fontSize: 12,
+              fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            {stabilizerEnabled ? '🎚 Stabi' : '〰 Stabi'}
+          </button>
+          <button
+            onClick={() => setShowStabilizerPanel((v) => !v)}
+            title="Parameter-Panel"
+            style={{
+              padding: '4px 8px', borderRadius: 6,
+              background: showStabilizerPanel ? '#6c63ff' : 'rgba(255,255,255,0.05)',
+              color: '#fff', border: '1px solid #333', fontSize: 11, cursor: 'pointer',
+            }}
+          >
+            ⚙
+          </button>
+        </div>
+        <div style={{
           display: 'flex', gap: 4, padding: '4px 6px', borderRadius: 8,
           background: 'rgba(255,255,255,0.06)', alignItems: 'center',
         }}>
@@ -631,6 +728,36 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
               {axis.toUpperCase()}
             </button>
           ))}
+        </div>
+        <div style={{
+          display: 'flex', gap: 4, padding: '4px 6px', borderRadius: 8,
+          background: 'rgba(255,255,255,0.06)', alignItems: 'center',
+        }}>
+          <span style={{ color: '#888', fontSize: 11, marginRight: 2 }}>Mode:</span>
+          <button
+            onClick={() => setHipRotationEnabled((v) => !v)}
+            title="Hip-Rotation: Oberkoerper dreht sich mit"
+            style={{
+              padding: '4px 10px', borderRadius: 6,
+              background: hipRotationEnabled ? '#6c63ff' : 'rgba(255,255,255,0.05)',
+              color: '#fff', border: '1px solid #333', fontSize: 12,
+              fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            🦴 Hip
+          </button>
+          <button
+            onClick={() => setLocomotionEnabled((v) => !v)}
+            title="Locomotion: Character bewegt sich durch den Raum"
+            style={{
+              padding: '4px 10px', borderRadius: 6,
+              background: locomotionEnabled ? '#6c63ff' : 'rgba(255,255,255,0.05)',
+              color: '#fff', border: '1px solid #333', fontSize: 12,
+              fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            👣 Walk
+          </button>
         </div>
         <button
           onClick={startCalibration}
@@ -772,6 +899,34 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
         </div>
       )}
 
+      {calibProgress !== null && (
+        <div style={{
+          position: 'absolute', top: 58, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 7, padding: '8px 18px', borderRadius: 20,
+          background: 'rgba(45,106,79,0.92)', color: '#fff',
+          fontFamily: 'monospace', fontSize: 14, fontWeight: 700,
+          boxShadow: '0 2px 12px rgba(45,106,79,0.5)',
+          display: 'flex', alignItems: 'center', gap: 10,
+          minWidth: 220,
+        }}>
+          <span style={{
+            width: 10, height: 10, borderRadius: '50%',
+            background: '#fff', animation: 'pulse 1s ease-in-out infinite',
+          }} />
+          <span>Kalibrieren…</span>
+          <div style={{
+            flex: 1, height: 6, background: 'rgba(255,255,255,0.2)',
+            borderRadius: 3, overflow: 'hidden',
+          }}>
+            <div style={{
+              width: `${Math.round(calibProgress * 100)}%`,
+              height: '100%', background: '#fff',
+              transition: 'width 0.1s linear',
+            }} />
+          </div>
+        </div>
+      )}
+
       {isRecording && recordDurationSec === null && (
         <div style={{
           position: 'absolute', top: 58, left: '50%', transform: 'translateX(-50%)',
@@ -881,6 +1036,66 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
 
+
+      {showStabilizerPanel && (
+        <div style={{
+          position: 'absolute', top: 58, right: 12, zIndex: 6,
+          background: 'rgba(22,22,42,0.95)', borderRadius: 12,
+          padding: 14, width: 280,
+          border: '1px solid #333', boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+          fontSize: 12, color: '#ccc',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+            <strong style={{ color: '#fff', fontSize: 13 }}>🎚 Stabilizer</strong>
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={() => {
+                setStabilizerConfig({ ...DEFAULT_STABILIZER_CONFIG });
+              }}
+              style={{
+                background: '#444', color: '#fff', border: 'none',
+                borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer',
+              }}
+              title="Defaults wiederherstellen"
+            >
+              Reset
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <StabilizerSlider
+              label="minCutoff XY"
+              hint="X/Y Glaettung — niedriger = glatter, aber laggiger"
+              value={stabilizerConfig.minCutoffXY}
+              min={0.1} max={5.0} step={0.05}
+              onChange={(v) => setStabilizerConfig((c) => ({ ...c, minCutoffXY: v }))}
+            />
+            <StabilizerSlider
+              label="minCutoff Z"
+              hint="Z-Tiefe Glaettung — default deutlich niedriger als XY"
+              value={stabilizerConfig.minCutoffZ}
+              min={0.05} max={2.0} step={0.05}
+              onChange={(v) => setStabilizerConfig((c) => ({ ...c, minCutoffZ: v }))}
+            />
+            <StabilizerSlider
+              label="beta (speed)"
+              hint="Hoeher = schneller reaktiv bei Bewegung"
+              value={stabilizerConfig.beta}
+              min={0.0} max={1.0} step={0.01}
+              onChange={(v) => setStabilizerConfig((c) => ({ ...c, beta: v }))}
+            />
+            <StabilizerSlider
+              label="visibility"
+              hint="Unter diesem Wert: Landmark wird ignoriert"
+              value={stabilizerConfig.visibilityThreshold}
+              min={0.0} max={1.0} step={0.05}
+              onChange={(v) => setStabilizerConfig((c) => ({ ...c, visibilityThreshold: v }))}
+            />
+          </div>
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #333', fontSize: 11, color: '#888' }}>
+            {stabilizerEnabled ? 'Aktiv — gefilterte Landmarks treiben das Skelett.' : 'Inaktiv — rohe MP-Daten. Zum Vergleich.'}
+          </div>
+        </div>
+      )}
 
       {bonesInfo && showBones && (
         <div style={{
@@ -1012,6 +1227,11 @@ interface BindState {
   localQuats: Map<THREE.Object3D, THREE.Quaternion>;
   worldQuats: Map<THREE.Object3D, THREE.Quaternion>;
   worldDirs: Map<THREE.Object3D, THREE.Vector3>;
+  /** Scene-root position at load time, used as anchor for root-locomotion. */
+  armaturePos: THREE.Vector3;
+  /** Rig torso length (hip-bone world-pos → neck/spine1-bone world-pos) in
+   * world units, for scaling MP offsets onto the rig. */
+  rigTorsoLength: number;
 }
 
 interface RestState {
@@ -1019,7 +1239,38 @@ interface RestState {
   // (while model is reset to bind pose). Per-frame delta is computed as
   // rotation from mpDir → current MP dir, then applied on top of bindWorldQuat.
   mpDirs: Map<THREE.Object3D, THREE.Vector3>;
+  /** Average torso length (hip-mid → shoulder-mid distance) in MediaPipe
+   * meters at calibration. Used later to scale locomotion offsets onto the
+   * rig's world units. */
+  mpTorsoLength: number;
+  /** Hip orientation frame (in axis-permuted Three.js space) at calibration.
+   * Delta = currentHipQuat * restHipQuat⁻¹ drives the hip bone. */
+  mpHipQuat?: THREE.Quaternion;
+  /** Shoulder orientation frame (in axis-permuted Three.js space) at
+   * calibration. Delta = currentShoulderQuat * restShoulderQuat⁻¹ drives the
+   * chest/spine1 bone. Lets hip and shoulder rotations decouple: e.g. if the
+   * user twists only the hip while keeping shoulders stable in world,
+   * shoulderDelta stays identity and the chest counter-rotates on top of
+   * the rotated hip. */
+  mpShoulderQuat?: THREE.Quaternion;
+  /** Hip-center landmark position (in axis-permuted Three.js space) at
+   * calibration — anchor for root-locomotion offsets. */
+  mpHipCenter?: THREE.Vector3;
 }
+
+/** Multi-frame calibration accumulator. Fills up over ~1s worth of samples
+ * after the user clicks Kalibrieren, then collapses into a RestState. */
+interface CalibrationAccumulator {
+  token: number;
+  framesCaptured: number;
+  framesTarget: number;
+  dirSums: Map<THREE.Object3D, THREE.Vector3>;
+  dirCounts: Map<THREE.Object3D, number>;
+  torsoLengthSum: number;
+  torsoLengthCount: number;
+}
+
+const CALIBRATION_FRAMES_TARGET = 45; // ~1.5s at 30fps, ~0.75s at 60fps
 
 interface RecordFrame {
   t: number;
@@ -1037,6 +1288,9 @@ function PoseDrivenModel({
   axisPerm,
   recordingActiveRef,
   recordBufferRef,
+  onCalibrationProgress,
+  hipRotationEnabledRef,
+  locomotionEnabledRef,
 }: {
   modelData: ArrayBuffer;
   fileName: string;
@@ -1047,7 +1301,14 @@ function PoseDrivenModel({
   axisPerm: AxisPerm;
   recordingActiveRef?: React.MutableRefObject<boolean>;
   recordBufferRef?: React.MutableRefObject<RecordBuffer>;
+  onCalibrationProgress?: (pct: number | null) => void;
+  /** Refs (not props) so toggle changes take effect mid-loop without
+   * re-mounting PoseDrivenModel and losing bind-pose state. */
+  hipRotationEnabledRef: React.MutableRefObject<boolean>;
+  locomotionEnabledRef: React.MutableRefObject<boolean>;
 }) {
+  // Reused per-frame Vector3 — avoids allocations in useFrame.
+  const tmpVec3A = useRef(new THREE.Vector3()).current;
   const [object, setObject] = useState<THREE.Object3D | null>(null);
   const bonesRef = useRef<Record<string, THREE.Object3D | null>>({});
 
@@ -1119,6 +1380,9 @@ function PoseDrivenModel({
       spine1: find(['mixamorigSpine1', 'Spine1', 'Chest', 'chest', 'Spine02', 'Spine2']),
       neck: find(['mixamorigNeck', 'Neck', 'neck', 'NeckTwist01', 'Neck01']),
       head: find(['mixamorigHead', 'Head', 'head']),
+      // Root hip — drives both the torso yaw and (indirectly, via scene
+      // offset) the character's position in the world.
+      hips: find(['mixamorigHips', 'Hips', 'hips', 'Hip', 'hip', 'Pelvis', 'pelvis', 'Root', 'root']),
     };
     const mapping = Object.fromEntries(
       Object.entries(bonesRef.current).map(([k, v]) => [k, v?.name ?? null]),
@@ -1141,7 +1405,23 @@ function PoseDrivenModel({
       const dir = computeBoneRestWorldDir(bone);
       if (dir) worldDirs.set(bone, dir);
     }
-    bindRef.current = { localQuats, worldQuats, worldDirs };
+    // Rig torso length: hip → neck/spine1 distance in world units. Used later
+    // to scale MediaPipe offsets onto the rig for locomotion.
+    const hipsB = bonesRef.current.hips;
+    const topB = bonesRef.current.neck ?? bonesRef.current.spine1 ?? bonesRef.current.spine;
+    let rigTorsoLength = 0;
+    if (hipsB && topB) {
+      const hipPos = new THREE.Vector3();
+      const topPos = new THREE.Vector3();
+      hipsB.getWorldPosition(hipPos);
+      topB.getWorldPosition(topPos);
+      rigTorsoLength = hipPos.distanceTo(topPos);
+    }
+    bindRef.current = {
+      localQuats, worldQuats, worldDirs,
+      armaturePos: object.position.clone(),
+      rigTorsoLength,
+    };
     // Invalidate any prior calibration — user must recalibrate after remount.
     restRef.current = null;
     lastCalibTokenRef.current = 0;
@@ -1150,6 +1430,7 @@ function PoseDrivenModel({
   const bindRef = useRef<BindState | null>(null);
   const restRef = useRef<RestState | null>(null);
   const lastCalibTokenRef = useRef(0);
+  const calibAccRef = useRef<CalibrationAccumulator | null>(null);
 
   // Helper: compute world direction from MediaPipe landmark indices
   const dirFromLandmarks = (
@@ -1203,6 +1484,110 @@ function PoseDrivenModel({
     return dir.lengthSq() > 1e-8 ? dir.normalize() : null;
   };
 
+  // Helper: build a hip orientation frame from landmarks, in axis-permuted
+  // Three.js space. Columns: right (leftHip→rightHip), up (hipMid→shoulderMid),
+  // forward = right × up. Returns null if any required landmark is missing or
+  // the frame is degenerate.
+  const hipQuatFrom = (
+    wl: Landmark[],
+    sx: number, sy: number, sz: number,
+  ): THREE.Quaternion | null => {
+    const lh = wl[L.leftHip], rh = wl[L.rightHip];
+    const ls = wl[L.leftShoulder], rs = wl[L.rightShoulder];
+    if (!lh || !rh || !ls || !rs) return null;
+
+    const right = new THREE.Vector3(
+      (rh.x - lh.x) * sx,
+      (rh.y - lh.y) * sy,
+      (rh.z - lh.z) * sz,
+    );
+    const hipMid = new THREE.Vector3(
+      ((lh.x + rh.x) / 2) * sx,
+      ((lh.y + rh.y) / 2) * sy,
+      ((lh.z + rh.z) / 2) * sz,
+    );
+    const shMid = new THREE.Vector3(
+      ((ls.x + rs.x) / 2) * sx,
+      ((ls.y + rs.y) / 2) * sy,
+      ((ls.z + rs.z) / 2) * sz,
+    );
+    if (right.lengthSq() < 1e-6) return null;
+    right.normalize();
+    const up = shMid.sub(hipMid);
+    if (up.lengthSq() < 1e-6) return null;
+    up.normalize();
+    // Orthogonalise up against right — otherwise the basis isn't truly
+    // orthonormal and the quat would encode shear.
+    up.sub(right.clone().multiplyScalar(up.dot(right))).normalize();
+
+    // Apply axis permutation (MP axes → Three axes) consistently to all three
+    // basis vectors so the whole frame ends up in the right coordinate system.
+    applyAxisPerm(right, axisPerm);
+    applyAxisPerm(up, axisPerm);
+    const forward = new THREE.Vector3().crossVectors(right, up).normalize();
+
+    const m = new THREE.Matrix4().makeBasis(right, up, forward);
+    return new THREE.Quaternion().setFromRotationMatrix(m);
+  };
+
+  // Helper: build a shoulder orientation frame from landmarks — same shape as
+  // hipQuatFrom but the `right` basis is derived from left/right shoulder
+  // instead of left/right hip. `up` stays hipMid→shoulderMid so torso lean is
+  // captured; decoupling shoulder vs hip yaw happens naturally because only
+  // the right-vector pivots with the shoulders.
+  const shoulderQuatFrom = (
+    wl: Landmark[],
+    sx: number, sy: number, sz: number,
+  ): THREE.Quaternion | null => {
+    const lh = wl[L.leftHip], rh = wl[L.rightHip];
+    const ls = wl[L.leftShoulder], rs = wl[L.rightShoulder];
+    if (!lh || !rh || !ls || !rs) return null;
+
+    const right = new THREE.Vector3(
+      (rs.x - ls.x) * sx,
+      (rs.y - ls.y) * sy,
+      (rs.z - ls.z) * sz,
+    );
+    const hipMid = new THREE.Vector3(
+      ((lh.x + rh.x) / 2) * sx,
+      ((lh.y + rh.y) / 2) * sy,
+      ((lh.z + rh.z) / 2) * sz,
+    );
+    const shMid = new THREE.Vector3(
+      ((ls.x + rs.x) / 2) * sx,
+      ((ls.y + rs.y) / 2) * sy,
+      ((ls.z + rs.z) / 2) * sz,
+    );
+    if (right.lengthSq() < 1e-6) return null;
+    right.normalize();
+    const up = shMid.sub(hipMid);
+    if (up.lengthSq() < 1e-6) return null;
+    up.normalize();
+    up.sub(right.clone().multiplyScalar(up.dot(right))).normalize();
+
+    applyAxisPerm(right, axisPerm);
+    applyAxisPerm(up, axisPerm);
+    const forward = new THREE.Vector3().crossVectors(right, up).normalize();
+
+    const m = new THREE.Matrix4().makeBasis(right, up, forward);
+    return new THREE.Quaternion().setFromRotationMatrix(m);
+  };
+
+  // Helper: hip center in axis-permuted Three.js space.
+  const hipCenterFrom = (
+    wl: Landmark[],
+    sx: number, sy: number, sz: number,
+  ): THREE.Vector3 | null => {
+    const lh = wl[L.leftHip], rh = wl[L.rightHip];
+    if (!lh || !rh) return null;
+    const v = new THREE.Vector3(
+      ((lh.x + rh.x) / 2) * sx,
+      ((lh.y + rh.y) / 2) * sy,
+      ((lh.z + rh.z) / 2) * sz,
+    );
+    return applyAxisPerm(v, axisPerm);
+  };
+
   // Helper: compute the current MediaPipe direction for a bone key
   const currentMpDirFor = (
     key: string,
@@ -1228,10 +1613,9 @@ function PoseDrivenModel({
     return null;
   };
 
-  // Calibration: reset all driven bones to their BIND pose first, then
-  // snapshot the user's current MediaPipe directions as the "rest reference".
-  // This way each calibration is independent — it never compounds on the
-  // previously-driven (deformed) pose.
+  // Multi-frame calibration: sum direction vectors over ~45 frames, then
+  // normalise into a stable rest reference. Single-frame snapshots were too
+  // jittery; the median/mean of a short window is much more reliable.
   useFrame(() => {
     if (!object || !bindRef.current) return;
     if (calibrateToken === 0) return;
@@ -1240,8 +1624,24 @@ function PoseDrivenModel({
     const wl = poseRef.current.worldLandmarks;
     if (!wl) return;
 
-    // Reset every driven bone back to bind pose so the snapshot below reads
-    // the ORIGINAL rest state, not the currently-driven one.
+    // New calibration run: wipe prior state so the user sees a fresh pose.
+    if (!calibAccRef.current || calibAccRef.current.token !== calibrateToken) {
+      calibAccRef.current = {
+        token: calibrateToken,
+        framesCaptured: 0,
+        framesTarget: CALIBRATION_FRAMES_TARGET,
+        dirSums: new Map(),
+        dirCounts: new Map(),
+        torsoLengthSum: 0,
+        torsoLengthCount: 0,
+      };
+      restRef.current = null;
+      onCalibrationProgress?.(0);
+    }
+    const acc = calibAccRef.current;
+
+    // Reset every driven bone back to bind pose so samples below read the
+    // ORIGINAL rest state, not whatever the last driving frame produced.
     for (const [bone, localQ] of bindRef.current.localQuats) {
       bone.quaternion.copy(localQ);
     }
@@ -1251,18 +1651,71 @@ function PoseDrivenModel({
     const sy = axisFlip.y ? -1 : 1;
     const sz = axisFlip.z ? -1 : 1;
 
-    const mpDirs = new Map<THREE.Object3D, THREE.Vector3>();
+    // Accumulate directions (sum, not individual samples, to stay allocation-free).
     for (const [key, bone] of Object.entries(bonesRef.current)) {
       if (!bone) continue;
       const dir = currentMpDirFor(key, wl, sx, sy, sz);
       if (!dir) continue;
-      mpDirs.set(bone, dir);
+      let sum = acc.dirSums.get(bone);
+      if (!sum) { sum = new THREE.Vector3(); acc.dirSums.set(bone, sum); }
+      sum.add(dir);
+      acc.dirCounts.set(bone, (acc.dirCounts.get(bone) ?? 0) + 1);
     }
 
-    if (mpDirs.size > 0) {
-      restRef.current = { mpDirs };
-      lastCalibTokenRef.current = calibrateToken;
-      console.log(`[Mocap] calibrated ${mpDirs.size} bones (bind-pose reset + fresh MP reference)`);
+    // Torso scale — average hip-mid → shoulder-mid distance over the window.
+    const lh = wl[L.leftHip], rh = wl[L.rightHip];
+    const ls = wl[L.leftShoulder], rs = wl[L.rightShoulder];
+    if (lh && rh && ls && rs) {
+      const hipX = (lh.x + rh.x) / 2, hipY = (lh.y + rh.y) / 2, hipZ = (lh.z + rh.z) / 2;
+      const shX = (ls.x + rs.x) / 2, shY = (ls.y + rs.y) / 2, shZ = (ls.z + rs.z) / 2;
+      const dx = shX - hipX, dy = shY - hipY, dz = shZ - hipZ;
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (Number.isFinite(len) && len > 0.01) {
+        acc.torsoLengthSum += len;
+        acc.torsoLengthCount++;
+      }
+    }
+
+    acc.framesCaptured++;
+    onCalibrationProgress?.(acc.framesCaptured / acc.framesTarget);
+
+    if (acc.framesCaptured >= acc.framesTarget) {
+      // Collapse: normalise accumulated sums into unit vectors.
+      const mpDirs = new Map<THREE.Object3D, THREE.Vector3>();
+      for (const [bone, sum] of acc.dirSums) {
+        const count = acc.dirCounts.get(bone) ?? 1;
+        const avg = sum.clone().multiplyScalar(1 / count);
+        if (avg.lengthSq() > 1e-6) mpDirs.set(bone, avg.normalize());
+      }
+      const mpTorsoLength = acc.torsoLengthCount > 0
+        ? acc.torsoLengthSum / acc.torsoLengthCount
+        : 0;
+
+      // Snapshot hip + shoulder orientation + hip center at the END of the
+      // calibration window (when the actor is most likely stably in T-pose).
+      // Averaging quaternions across frames is fragile — a single stable
+      // sample at the tail is simpler and robust enough here.
+      let mpHipQuat: THREE.Quaternion | undefined;
+      let mpShoulderQuat: THREE.Quaternion | undefined;
+      let mpHipCenter: THREE.Vector3 | undefined;
+      const hipQ = hipQuatFrom(wl, sx, sy, sz);
+      if (hipQ) mpHipQuat = hipQ;
+      const shQ = shoulderQuatFrom(wl, sx, sy, sz);
+      if (shQ) mpShoulderQuat = shQ;
+      const hipC = hipCenterFrom(wl, sx, sy, sz);
+      if (hipC) mpHipCenter = hipC;
+
+      if (mpDirs.size > 0) {
+        restRef.current = { mpDirs, mpTorsoLength, mpHipQuat, mpShoulderQuat, mpHipCenter };
+        lastCalibTokenRef.current = calibrateToken;
+        console.log(
+          `[Mocap] calibrated ${mpDirs.size} bones over ${acc.framesCaptured} frames ` +
+          `(mpTorso=${mpTorsoLength.toFixed(3)}m, hipQuat=${!!mpHipQuat}, ` +
+          `shoulderQuat=${!!mpShoulderQuat}, hipCenter=${!!mpHipCenter})`,
+        );
+      }
+      calibAccRef.current = null;
+      onCalibrationProgress?.(null);
     }
   });
 
@@ -1278,8 +1731,97 @@ function PoseDrivenModel({
     const tmp = new THREE.Quaternion();
     const tmp2 = new THREE.Quaternion();
 
+    // --- Torso driving: hip + shoulder as two independent frames ---
+    // We treat hip and shoulder as separately observed MP frames. The hip
+    // bone follows hipDelta, the chest bone follows shoulderDelta. When hip
+    // and shoulder rotate together, chest sits "on top of" the rotated hip.
+    // When the user isolates them (twist at the waist), chest
+    // counter-rotates to keep shoulders stable in world.
+    const hipsBone = bonesRef.current.hips;
+    const bindHipWorldQuat = hipsBone ? bindRef.current.worldQuats.get(hipsBone) : undefined;
+
+    // Chest bone = spine1 if present, else spine — whichever is the top of
+    // the torso chain we have access to.
+    const chestBone = bonesRef.current.spine1 ?? bonesRef.current.spine;
+    const bindChestWorldQuat = chestBone ? bindRef.current.worldQuats.get(chestBone) : undefined;
+
+    // Compute deltas once per frame.
+    let hipDelta: THREE.Quaternion | null = null;
+    let shoulderDelta: THREE.Quaternion | null = null;
+    if (hipRotationEnabledRef.current && restRef.current.mpHipQuat) {
+      const cur = hipQuatFrom(wl, sx, sy, sz);
+      if (cur) hipDelta = cur.multiply(restRef.current.mpHipQuat.clone().invert());
+    }
+    if (hipRotationEnabledRef.current && restRef.current.mpShoulderQuat) {
+      const cur = shoulderQuatFrom(wl, sx, sy, sz);
+      if (cur) shoulderDelta = cur.multiply(restRef.current.mpShoulderQuat.clone().invert());
+    }
+
+    // 1) Drive hips (or reset to bind if hip rotation is disabled).
+    if (hipsBone && hipsBone.parent) {
+      const bindHipLocal = bindRef.current.localQuats.get(hipsBone);
+      if (hipDelta && bindHipWorldQuat) {
+        const newHipWorld = hipDelta.clone().multiply(bindHipWorldQuat);
+        const parentInv = hipsBone.parent.getWorldQuaternion(tmp).invert();
+        const newHipLocal = parentInv.multiply(newHipWorld);
+        hipsBone.quaternion.slerp(newHipLocal, 0.4);
+      } else if (bindHipLocal) {
+        hipsBone.quaternion.slerp(bindHipLocal, 0.4);
+      }
+      object.updateMatrixWorld(true);
+    }
+
+    // 2) Drive intermediate spine (if chest bone is spine1 and spine exists
+    // as a separate bone). Spine rides the hip rigidly — any bend/twist the
+    // torso makes surfaces through the chest bone below. Keeps the math
+    // decomposition clean.
+    const spineBone = bonesRef.current.spine;
+    if (hipRotationEnabledRef.current && spineBone && spineBone !== chestBone) {
+      const bindSpineLocal = bindRef.current.localQuats.get(spineBone);
+      if (bindSpineLocal) spineBone.quaternion.slerp(bindSpineLocal, 0.4);
+      object.updateMatrixWorld(true);
+    }
+
+    // 3) Drive chest with shoulder delta so shoulders track the user's actual
+    // shoulder line — independent of the hip rotation.
+    if (
+      hipRotationEnabledRef.current &&
+      shoulderDelta &&
+      chestBone && chestBone.parent && bindChestWorldQuat
+    ) {
+      const newChestWorld = shoulderDelta.clone().multiply(bindChestWorldQuat);
+      const parentInv = chestBone.parent.getWorldQuaternion(tmp).invert();
+      const newChestLocal = parentInv.multiply(newChestWorld);
+      chestBone.quaternion.slerp(newChestLocal, 0.4);
+      object.updateMatrixWorld(true);
+    } else if (!hipRotationEnabledRef.current && chestBone) {
+      // Hip rotation off → let chest fall back to whatever the direction-
+      // based per-bone loop does below. Nothing to do here.
+    }
+
+    // Hip world quats for hip-local-frame driving of arms/legs below. When
+    // hip bone doesn't exist these degenerate to identity and the formula
+    // reduces to the original direction-only driver.
+    const hipNow = hipsBone
+      ? hipsBone.getWorldQuaternion(new THREE.Quaternion())
+      : new THREE.Quaternion();
+    const hipNowInv = hipNow.clone().invert();
+    const hipBindInv = bindHipWorldQuat
+      ? bindHipWorldQuat.clone().invert()
+      : new THREE.Quaternion();
+
     for (const [key, bone] of Object.entries(bonesRef.current)) {
       if (!bone || !bone.parent) continue;
+      if (key === 'hips') continue; // handled above
+      // Spine chain rides the hip as a rigid torso when hip rotation is on.
+      // The hip-mid → shoulder-mid direction is invariant under pure yaw, so
+      // direction-only driving would fight the hip rotation and twist the
+      // torso.  Skipping here lets them inherit hip rotation via the parent.
+      if (hipRotationEnabledRef.current && (key === 'spine' || key === 'spine1' || key === 'neck')) {
+        const bindLocal = bindRef.current.localQuats.get(bone);
+        if (bindLocal) bone.quaternion.slerp(bindLocal, 0.4);
+        continue;
+      }
       const bindWorldQuat = bindRef.current.worldQuats.get(bone);
       const mpRestDir = restRef.current.mpDirs.get(bone);
       if (!bindWorldQuat || !mpRestDir) continue;
@@ -1287,23 +1829,60 @@ function PoseDrivenModel({
       const currDir = currentMpDirFor(key, wl, sx, sy, sz);
       if (!currDir) continue;
 
-      // Apply the global axis permutation to BOTH rest and current MP
-      // directions. This remaps which MediaPipe axis becomes which Three.js
-      // axis (e.g. "YZX" makes X→Y, Y→Z, Z→X) — exactly the "swap axes"
-      // operation. Mutates copies; the cached mpRestDir stays intact.
+      // Axis permutation (MP axes → Three axes).
       const restPerm = applyAxisPerm(mpRestDir.clone(), axisPerm);
       const currPerm = applyAxisPerm(currDir, axisPerm);
 
-      // Delta = rotation that took (permuted) MP direction from rest to current.
-      const delta = tmp.setFromUnitVectors(restPerm, currPerm);
+      // Compute the delta in HIP-LOCAL frame. This is the key fix for
+      // "legs/arms don't follow hip rotation": pure yaw of a vertical limb
+      // produces no world-direction change, so direction-only driving leaves
+      // the limb anchored to bind world while the parent hip rotates —
+      // resulting in the limb twisting opposite to the hip. By expressing
+      // both rest and current directions in the hip's local frame, the
+      // delta captures only the motion *relative to the hip*, and the
+      // parent's rotation is handled naturally by the hierarchy.
+      const restInHip = restPerm.applyQuaternion(hipBindInv);
+      const currInHip = currPerm.applyQuaternion(hipNowInv);
+      const delta = tmp.setFromUnitVectors(restInHip, currInHip);
 
-      // Apply to the IMMUTABLE bind-pose world quaternion.
-      const newWorld = delta.multiply(bindWorldQuat);
-      // Convert to local relative to parent's CURRENT world.
+      // newWorld = hipNow · delta · hipBindInv · bindBoneWorld.
+      // When hip isn't driven (hipNow == bindHip) this reduces to the
+      // original delta · bindBoneWorld. When hip IS driven, the (hipNow ·
+      // hipBindInv) prefix carries the bone along with the hip.
+      const newWorld = hipNow.clone()
+        .multiply(delta)
+        .multiply(hipBindInv)
+        .multiply(bindWorldQuat);
+
       const parentInv = bone.parent.getWorldQuaternion(tmp2).invert();
       const newLocal = parentInv.multiply(newWorld);
 
       bone.quaternion.slerp(newLocal, 0.4);
+    }
+
+    // --- Root locomotion: move the whole scene-root based on MP hip center ---
+    if (
+      locomotionEnabledRef.current &&
+      restRef.current.mpHipCenter &&
+      restRef.current.mpTorsoLength > 1e-3 &&
+      bindRef.current.rigTorsoLength > 1e-3
+    ) {
+      const currHipCenter = hipCenterFrom(wl, sx, sy, sz);
+      if (currHipCenter) {
+        const scale = bindRef.current.rigTorsoLength / restRef.current.mpTorsoLength;
+        const offset = currHipCenter.sub(restRef.current.mpHipCenter).multiplyScalar(scale);
+        // Safety clamp: ignore single-frame glitches that would teleport
+        // the character. 0.5 world units per frame is already a sprint.
+        const lenSq = offset.lengthSq();
+        if (lenSq < 0.25) {
+          const target = tmpVec3A.copy(bindRef.current.armaturePos).add(offset);
+          // Optional per-axis gate: Z is the noisiest channel, so we dampen
+          // it more strongly via a lower blend factor.
+          object.position.x = THREE.MathUtils.lerp(object.position.x, target.x, 0.35);
+          object.position.y = THREE.MathUtils.lerp(object.position.y, target.y, 0.35);
+          object.position.z = THREE.MathUtils.lerp(object.position.z, target.z, 0.15);
+        }
+      }
     }
 
     // Record-capture: snapshot each tracked bone's current LOCAL quaternion
@@ -1335,4 +1914,27 @@ function centerAndScale(object: THREE.Object3D) {
   const scale = 2 / maxDim;
   object.position.sub(center);
   object.scale.multiplyScalar(scale);
+}
+
+function StabilizerSlider({
+  label, hint, value, min, max, step, onChange,
+}: {
+  label: string; hint: string; value: number;
+  min: number; max: number; step: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label style={{ display: 'block' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 3 }}>
+        <span style={{ color: '#fff', fontSize: 12, fontWeight: 600 }}>{label}</span>
+        <span style={{ color: '#8fd', fontFamily: 'monospace', fontSize: 11 }}>{value.toFixed(2)}</span>
+      </div>
+      <input
+        type="range" min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={{ width: '100%', accentColor: '#6c63ff' }}
+      />
+      <div style={{ fontSize: 10, color: '#777', marginTop: 1 }}>{hint}</div>
+    </label>
+  );
 }
