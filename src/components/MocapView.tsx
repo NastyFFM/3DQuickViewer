@@ -70,6 +70,16 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
   // Stabiliser lives across renders; config mutations push into it via
   // updateConfig so we don't re-allocate 99 filters on every slider tick.
   const stabilizerRef = useRef<PoseStabilizer>(new PoseStabilizer());
+  // Source: live webcam vs uploaded video file. For video, the first frame
+  // is assumed to be a T-pose (for calibration); playback then drives mocap +
+  // audio capture via captureStream(). Single videoRef handles both — we
+  // swap srcObject/src on mode change.
+  const [source, setSource] = useState<'live' | 'video'>('live');
+  const sourceRef = useRef<'live' | 'video'>('live');
+  const webcamStreamRef = useRef<MediaStream | null>(null);
+  const videoFileUrlRef = useRef<string | null>(null);
+  const [videoFileName, setVideoFileName] = useState<string | null>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
   // Ref mirror of the on/off state so the detection loop (mounted once) can
   // observe toggle changes without being torn down & restarted.
   const stabilizerEnabledRef = useRef<boolean>(true);
@@ -201,8 +211,13 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
       setTimeout(() => setErr(''), 3000);
       return;
     }
-    if (!audioStreamRef.current) {
+    if (sourceRef.current === 'live' && !audioStreamRef.current) {
       setErr('Audio-Stream fehlt — Webcam-Permission enthaelt kein Mikrofon?');
+      setTimeout(() => setErr(''), 3000);
+      return;
+    }
+    if (sourceRef.current === 'video' && !videoRef.current?.src) {
+      setErr('Kein Video geladen.');
       setTimeout(() => setErr(''), 3000);
       return;
     }
@@ -266,36 +281,95 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
     return 'audio/webm';
   };
 
-  const beginRecordingNow = () => {
-    const audio = audioStreamRef.current;
-    if (!audio) return;
+  // Kept so stopRecording can detach the ended-listener cleanly on manual stop.
+  const videoEndedHandlerRef = useRef<(() => void) | null>(null);
+
+  const beginRecordingNow = async () => {
+    const isVideo = sourceRef.current === 'video';
+
+    // Resolve the audio stream used by MediaRecorder:
+    //  - live source → mic stream captured at webcam init
+    //  - video source → audio track from the video element's captureStream()
+    let audio: MediaStream | null;
+    if (isVideo) {
+      const v = videoRef.current;
+      if (!v || !v.src) {
+        setErr('Kein Video geladen');
+        setTimeout(() => setErr(''), 3000);
+        return;
+      }
+      v.muted = false;
+      v.currentTime = 0;
+      type CaptureVideo = HTMLVideoElement & {
+        captureStream?: () => MediaStream;
+        mozCaptureStream?: () => MediaStream;
+      };
+      const cv = v as CaptureVideo;
+      const captured = cv.captureStream?.() ?? cv.mozCaptureStream?.() ?? null;
+      const track = captured?.getAudioTracks()[0];
+      audio = track ? new MediaStream([track]) : null;
+    } else {
+      audio = audioStreamRef.current;
+      if (!audio) return;
+    }
+
     audioChunksRef.current = [];
     recordBufferRef.current = { startTime: performance.now(), frames: [] };
     recordingActiveRef.current = true;
 
     const mime = pickAudioMime();
-    let recorder: MediaRecorder;
-    try {
-      recorder = new MediaRecorder(audio, { mimeType: mime });
-    } catch (e) {
-      console.error('[Mocap] MediaRecorder init failed:', e);
-      recordingActiveRef.current = false;
-      setErr('MediaRecorder konnte nicht gestartet werden: ' + (e as Error).message);
-      return;
+    let recorder: MediaRecorder | null = null;
+    if (audio) {
+      try {
+        recorder = new MediaRecorder(audio, { mimeType: mime });
+      } catch (e) {
+        console.error('[Mocap] MediaRecorder init failed:', e);
+        if (!isVideo) {
+          recordingActiveRef.current = false;
+          setErr('MediaRecorder konnte nicht gestartet werden: ' + (e as Error).message);
+          return;
+        }
+        // Video path without recorder = silent recording. Fall through.
+      }
+      if (recorder) {
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+        };
+        recorder.onstop = () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: mime });
+          finalizeRecording(audioBlob, mime);
+        };
+        recorder.start(500);
+      }
     }
-    recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
-    };
-    recorder.onstop = () => {
-      const audioBlob = new Blob(audioChunksRef.current, { type: mime });
-      finalizeRecording(audioBlob, mime);
-    };
-    recorder.start(500);
     mediaRecorderRef.current = recorder;
 
     setIsRecording(true);
     setRecordStartMs(performance.now());
     setRecordElapsedMs(0);
+
+    if (isVideo) {
+      const v = videoRef.current!;
+      const onEnded = () => {
+        v.removeEventListener('ended', onEnded);
+        videoEndedHandlerRef.current = null;
+        stopRecording();
+      };
+      v.addEventListener('ended', onEnded);
+      videoEndedHandlerRef.current = onEnded;
+      try {
+        await v.play();
+      } catch (e) {
+        console.error('[Mocap/video] play() failed:', e);
+        setErr('Video-Wiedergabe konnte nicht starten: ' + (e as Error).message);
+        recordingActiveRef.current = false;
+        setIsRecording(false);
+        if (recorder && recorder.state !== 'inactive') recorder.stop();
+        v.removeEventListener('ended', onEnded);
+        videoEndedHandlerRef.current = null;
+        return;
+      }
+    }
 
     // Auto-stop after the selected duration so the actor can focus on
     // performance instead of watching a clock. Cleaned up in stopRecording().
@@ -316,6 +390,16 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
       autoStopTimerRef.current = null;
     }
     recordingActiveRef.current = false;
+    // Video source: pause playback and detach the end-of-media listener so a
+    // subsequent ended event (e.g. when scrubbing) doesn't re-trigger us.
+    if (sourceRef.current === 'video' && videoRef.current) {
+      try { videoRef.current.pause(); } catch { /* ignore */ }
+      videoRef.current.muted = true;
+      if (videoEndedHandlerRef.current) {
+        videoRef.current.removeEventListener('ended', videoEndedHandlerRef.current);
+        videoEndedHandlerRef.current = null;
+      }
+    }
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
       recorder.stop(); // triggers onstop → finalizeRecording
@@ -386,54 +470,113 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
     startX: number; startY: number; startW: number; startH: number;
   }>(null);
 
-  useEffect(() => {
-    let active = true;
-    let stream: MediaStream | null = null;
-
-    // Sanity checks — bail early with a clear error
+  const startWebcam = async (): Promise<MediaStream | null> => {
     if (!window.isSecureContext) {
       setErr('Webcam braucht HTTPS (secure context). Lade die Seite ueber https:// statt http://.');
       setStatus('error');
-      return;
+      return null;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
       setErr('Dieser Browser unterstuetzt getUserMedia nicht.');
       setStatus('error');
-      return;
+      return null;
     }
-
-    // 1) Request webcam + microphone IMMEDIATELY — browser prompt should
-    // appear instantly. Audio is needed later for the Record feature; we
-    // isolate just the audio track into a separate stream for MediaRecorder
-    // so video frames don't bleed into the recording.
-    const webcamP = (async () => {
-      try {
-        const s = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480, facingMode: 'user' },
-          audio: true,
-        });
-        if (!active) { s.getTracks().forEach((t) => t.stop()); return null; }
-        stream = s;
-        const audioTrack = s.getAudioTracks()[0];
-        if (audioTrack) {
-          audioStreamRef.current = new MediaStream([audioTrack]);
-        }
-        if (videoRef.current) {
-          // Feed only the video track into the preview element (no local
-          // echo of our own microphone).
-          const videoTrack = s.getVideoTracks()[0];
-          videoRef.current.srcObject = videoTrack ? new MediaStream([videoTrack]) : s;
-          await videoRef.current.play();
-        }
-        setStatus('webcam');
-        return s;
-      } catch (e) {
-        console.error('[Mocap] webcam error:', e);
-        setErr('Webcam-Zugriff verweigert: ' + (e as Error).message);
-        setStatus('error');
-        return null;
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user' },
+        audio: true,
+      });
+      webcamStreamRef.current = s;
+      const audioTrack = s.getAudioTracks()[0];
+      if (audioTrack) audioStreamRef.current = new MediaStream([audioTrack]);
+      if (videoRef.current) {
+        // Switch the preview element back to the webcam stream. Feed ONLY the
+        // video track so we don't echo the mic through the page speakers.
+        const videoTrack = s.getVideoTracks()[0];
+        videoRef.current.src = '';
+        videoRef.current.srcObject = videoTrack ? new MediaStream([videoTrack]) : s;
+        videoRef.current.muted = true;
+        await videoRef.current.play().catch(() => { /* swallow autoplay errors */ });
       }
-    })();
+      setStatus('webcam');
+      return s;
+    } catch (e) {
+      console.error('[Mocap] webcam error:', e);
+      setErr('Webcam-Zugriff verweigert: ' + (e as Error).message);
+      setStatus('error');
+      return null;
+    }
+  };
+
+  const stopWebcam = () => {
+    webcamStreamRef.current?.getTracks().forEach((t) => t.stop());
+    webcamStreamRef.current = null;
+    audioStreamRef.current = null;
+  };
+
+  const handleVideoUpload = async (file: File) => {
+    // Stop live capture — mic stream is no longer the recording source.
+    stopWebcam();
+    // Release prior object URL.
+    if (videoFileUrlRef.current) {
+      URL.revokeObjectURL(videoFileUrlRef.current);
+      videoFileUrlRef.current = null;
+    }
+    const url = URL.createObjectURL(file);
+    videoFileUrlRef.current = url;
+    setVideoFileName(file.name);
+    setSource('video');
+    sourceRef.current = 'video';
+    // Prior calibration is tied to the webcam's coordinate framing. Video may
+    // be un-mirrored, different framing, etc. Force re-calibration so axes
+    // don't linger from live mode.
+    setCalibrateToken(0);
+    stabilizerRef.current.reset();
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+      videoRef.current.src = url;
+      videoRef.current.loop = false;
+      // Keep muted=true during preview so audio plays only during recording.
+      videoRef.current.muted = true;
+      videoRef.current.currentTime = 0;
+      await videoRef.current.play().catch(() => { /* need a frame for detection */ });
+      // Pause immediately after first frame available so Frame 0 (the T-pose)
+      // is visible and stable for calibration.
+      try {
+        await new Promise<void>((resolve) => {
+          const v = videoRef.current!;
+          const once = () => { v.removeEventListener('loadeddata', once); resolve(); };
+          if (v.readyState >= 2) resolve();
+          else v.addEventListener('loadeddata', once);
+        });
+        videoRef.current.pause();
+        videoRef.current.currentTime = 0;
+      } catch { /* ignore */ }
+    }
+    setStatus('ready');
+    setErr('');
+  };
+
+  const handleSwitchToLive = async () => {
+    if (videoFileUrlRef.current) {
+      URL.revokeObjectURL(videoFileUrlRef.current);
+      videoFileUrlRef.current = null;
+    }
+    setVideoFileName(null);
+    setSource('live');
+    sourceRef.current = 'live';
+    setCalibrateToken(0);
+    stabilizerRef.current.reset();
+    setStatus('init');
+    await startWebcam();
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    // 1) Webcam start in parallel with MediaPipe init.
+    const webcamP = startWebcam();
 
     // 2) Load MediaPipe in parallel (slower — ~6MB WASM + model)
     const mpP = (async () => {
@@ -461,10 +604,12 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
       }
     })();
 
-    // 3) Once both ready, start detection loop
+    // 3) Once both ready, start detection loop. Loop runs irrespective of
+    // source (live/video) — videoRef.current is swapped at the element
+    // level when the user uploads a file.
     Promise.all([webcamP, mpP]).then(([s, lm]) => {
-      if (!active || !s || !lm) return;
-      setStatus('ready');
+      if (!active || !lm) return;
+      if (s || sourceRef.current === 'video') setStatus('ready');
       const loop = () => {
         if (!active) return;
         const video = videoRef.current;
@@ -477,7 +622,7 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
             const rawWorld = res.worldLandmarks?.[0] ?? null;
             // Stabilise world landmarks before exposing them downstream.
             // The overlay still uses the raw normalized landmarks so the
-            // webcam preview stays perfectly aligned with the video.
+            // preview stays perfectly aligned with the source.
             poseRef.current.worldLandmarks = stabilizerEnabledRef.current
               ? stabilizerRef.current.process(rawWorld, tNow) as unknown as Landmark[] | null
               : rawWorld;
@@ -496,8 +641,13 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       landmarkerRef.current?.close();
       landmarkerRef.current = null;
-      stream?.getTracks().forEach((t) => t.stop());
+      stopWebcam();
+      if (videoFileUrlRef.current) {
+        URL.revokeObjectURL(videoFileUrlRef.current);
+        videoFileUrlRef.current = null;
+      }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -539,14 +689,20 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
           <video
             ref={videoRef}
             playsInline muted autoPlay
-            style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
+            style={{
+              width: '100%', height: '100%', objectFit: 'cover',
+              // Mirror the webcam (selfie-view) but leave uploaded video
+              // content untouched — it already has natural orientation.
+              transform: source === 'live' ? 'scaleX(-1)' : 'none',
+            }}
           />
           <canvas
             ref={overlayRef}
             width={640} height={480}
             style={{
               position: 'absolute', top: 0, left: 0,
-              width: '100%', height: '100%', transform: 'scaleX(-1)',
+              width: '100%', height: '100%',
+              transform: source === 'live' ? 'scaleX(-1)' : 'none',
               pointerEvents: 'none',
             }}
           />
@@ -632,6 +788,55 @@ export function MocapView({ modelData, fileName, scale = 1, onMocapSaved }: Moca
         >
           {showWebcam ? '📷 Webcam' : '📷 Webcam zeigen'}
         </button>
+        <div style={{
+          display: 'flex', gap: 4, padding: '4px 6px', borderRadius: 8,
+          background: 'rgba(255,255,255,0.06)', alignItems: 'center',
+        }}>
+          <span style={{ color: '#888', fontSize: 11, marginRight: 2 }}>Input:</span>
+          <button
+            onClick={handleSwitchToLive}
+            title="Webcam live verwenden"
+            style={{
+              padding: '4px 10px', borderRadius: 6,
+              background: source === 'live' ? '#6c63ff' : 'rgba(255,255,255,0.05)',
+              color: '#fff', border: '1px solid #333', fontSize: 12,
+              fontWeight: 700, cursor: source === 'live' ? 'default' : 'pointer',
+            }}
+            disabled={isRecording}
+          >
+            🎥 Live
+          </button>
+          <button
+            onClick={() => videoInputRef.current?.click()}
+            title="Video-Datei hochladen (erste Frame = T-Pose)"
+            disabled={isRecording}
+            style={{
+              padding: '4px 10px', borderRadius: 6,
+              background: source === 'video' ? '#6c63ff' : 'rgba(255,255,255,0.05)',
+              color: '#fff', border: '1px solid #333', fontSize: 12,
+              fontWeight: 700, cursor: isRecording ? 'default' : 'pointer',
+              opacity: isRecording ? 0.6 : 1,
+            }}
+          >
+            🎞 Video
+          </button>
+          <input
+            ref={videoInputRef}
+            type="file"
+            accept="video/*"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleVideoUpload(f);
+              e.target.value = '';
+            }}
+          />
+          {source === 'video' && videoFileName && (
+            <span style={{ color: '#8fd', fontSize: 11, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={videoFileName}>
+              {videoFileName}
+            </span>
+          )}
+        </div>
         {bonesInfo && (
           <button
             onClick={() => setShowBones(!showBones)}
