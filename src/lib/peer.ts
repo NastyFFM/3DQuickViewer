@@ -1,6 +1,6 @@
 import { io, type Socket } from 'socket.io-client';
 import type { PeerMessage, ModelMeta, ModelChunk, StoredModel } from '../types';
-import { getModel, getAllModels, saveModel } from './storage';
+import { getModel, getAllModels, saveModel, getMocapAudio, saveMocapAudio } from './storage';
 
 const SIGNALING_SERVER = 'https://web-production-84380f.up.railway.app';
 const CHUNK_SIZE = 16 * 1024; // 16KB chunks — small and safe
@@ -11,6 +11,14 @@ type OnTransferProgress = (modelId: string, progress: number) => void;
 type OnModelReceived = (model: StoredModel) => void;
 type OnPeerConnected = (peerId: string) => void;
 type OnPeerDisconnected = (peerId: string) => void;
+type OnMocapAudioReceived = (mocapId: string) => void;
+
+interface PendingAudio {
+  id: string;
+  mimeType: string;
+  chunks: string[];
+  received: number;
+}
 
 interface DataChannelWrapper {
   pc: RTCPeerConnection;
@@ -23,11 +31,13 @@ export class RoomPeer {
   private peers: Map<string, DataChannelWrapper> = new Map();
   private roomId: string;
   private pendingChunks: Map<string, { meta: ModelMeta; chunks: string[]; received: number }> = new Map();
+  private pendingAudio: Map<string, PendingAudio> = new Map();
 
   // Callbacks
   onModelList: OnModelList = () => {};
   onTransferProgress: OnTransferProgress = () => {};
   onModelReceived: OnModelReceived = () => {};
+  onMocapAudioReceived: OnMocapAudioReceived = () => {};
   onPeerConnected: OnPeerConnected = () => {};
   onPeerDisconnected: OnPeerDisconnected = () => {};
   onConnected: () => void = () => {};
@@ -166,8 +176,8 @@ export class RoomPeer {
 
       // Send model list on connect
       const models = await getAllModels();
-      const metas: ModelMeta[] = models.map(({ id, name, fileName, fileSize, thumbnail, type }) => ({
-        id, name, fileName, fileSize, thumbnail, type,
+      const metas: ModelMeta[] = models.map(({ id, name, fileName, fileSize, thumbnail, type, hasAudio, durationSec }) => ({
+        id, name, fileName, fileSize, thumbnail, type, hasAudio, durationSec,
       }));
       this.sendToPeer(peerId, { type: 'model-list', payload: metas });
     };
@@ -297,6 +307,8 @@ export class RoomPeer {
             fileSize: completed.meta.fileSize,
             thumbnail: completed.meta.thumbnail,
             type: completed.meta.type,
+            hasAudio: completed.meta.hasAudio,
+            durationSec: completed.meta.durationSec,
             data: fullBytes.buffer,
             createdAt: Date.now(),
             roomId: this.roomId,
@@ -306,12 +318,100 @@ export class RoomPeer {
           console.log(`[3DQV] Model saved to IndexedDB: ${model.id}`);
           this.pendingChunks.delete(completeId);
           this.onModelReceived(model);
+          // For mocap items with linked audio: immediately request the
+          // audio blob from the sender so it follows right after.
+          if (model.type === 'mocap' && model.hasAudio) {
+            this.sendToPeer(fromPeerId, {
+              type: 'mocap-audio-request',
+              payload: model.id,
+            });
+          }
         } catch (err) {
           console.error('[3DQV] Failed to reassemble/save model:', err);
         }
         break;
       }
+      case 'mocap-audio-request': {
+        const id = msg.payload as string;
+        await this.sendMocapAudioToPeer(fromPeerId, id);
+        break;
+      }
+      case 'mocap-audio-meta': {
+        const meta = msg.payload as import('../types').MocapAudioMeta;
+        const totalChunks = Math.ceil(meta.fileSize / CHUNK_SIZE);
+        this.pendingAudio.set(meta.id, {
+          id: meta.id,
+          mimeType: meta.mimeType,
+          chunks: new Array(totalChunks),
+          received: 0,
+        });
+        break;
+      }
+      case 'mocap-audio-chunk': {
+        const chunk = msg.payload as import('../types').MocapAudioChunk;
+        const pending = this.pendingAudio.get(chunk.id);
+        if (!pending) break;
+        pending.chunks[chunk.chunkIndex] = chunk.data;
+        pending.received++;
+        break;
+      }
+      case 'mocap-audio-complete': {
+        const id = msg.payload as string;
+        const pending = this.pendingAudio.get(id);
+        if (!pending) break;
+        try {
+          const decoded: Uint8Array[] = [];
+          let total = 0;
+          for (const b64 of pending.chunks) {
+            const bin = atob(b64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            decoded.push(bytes);
+            total += bytes.length;
+          }
+          const full = new Uint8Array(total);
+          let off = 0;
+          for (const d of decoded) { full.set(d, off); off += d.length; }
+          const blob = new Blob([full], { type: pending.mimeType });
+          await saveMocapAudio(pending.id, blob);
+          console.log(`[3DQV] Mocap audio saved: ${pending.id}`);
+          this.pendingAudio.delete(id);
+          this.onMocapAudioReceived(pending.id);
+        } catch (err) {
+          console.error('[3DQV] Failed to reassemble mocap audio:', err);
+        }
+        break;
+      }
     }
+  }
+
+  private async sendMocapAudioToPeer(peerId: string, mocapId: string) {
+    const audio = await getMocapAudio(mocapId);
+    if (!audio) return;
+    const wrapper = this.peers.get(peerId);
+    if (!wrapper?.channel || wrapper.channel.readyState !== 'open') return;
+
+    const bytes = new Uint8Array(audio.data);
+    const totalChunks = Math.ceil(bytes.length / CHUNK_SIZE);
+    this.sendToPeer(peerId, {
+      type: 'mocap-audio-meta',
+      payload: { id: mocapId, mimeType: audio.mimeType, fileSize: bytes.length },
+    });
+    for (let i = 0; i < totalChunks; i++) {
+      if (wrapper.channel.readyState !== 'open') break;
+      await this.drainBuffer(wrapper.channel);
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, bytes.length);
+      const slice = bytes.slice(start, end);
+      let binary = '';
+      for (let j = 0; j < slice.length; j++) binary += String.fromCharCode(slice[j]);
+      const base64 = btoa(binary);
+      this.sendToPeer(peerId, {
+        type: 'mocap-audio-chunk',
+        payload: { id: mocapId, chunkIndex: i, totalChunks, data: base64 },
+      });
+    }
+    this.sendToPeer(peerId, { type: 'mocap-audio-complete', payload: mocapId });
   }
 
   private async sendModelToPeer(peerId: string, modelId: string) {
@@ -328,6 +428,8 @@ export class RoomPeer {
       fileSize: model.fileSize,
       thumbnail: model.thumbnail,
       type: model.type,
+      hasAudio: model.hasAudio,
+      durationSec: model.durationSec,
     };
 
     this.sendToPeer(peerId, { type: 'model-meta', payload: meta });
@@ -373,6 +475,8 @@ export class RoomPeer {
       fileSize: model.fileSize,
       thumbnail: model.thumbnail,
       type: model.type,
+      hasAudio: model.hasAudio,
+      durationSec: model.durationSec,
     };
 
     this.broadcast({ type: 'model-meta', payload: meta });
@@ -417,8 +521,8 @@ export class RoomPeer {
 
   async broadcastModelList() {
     const models = await getAllModels();
-    const metas: ModelMeta[] = models.map(({ id, name, fileName, fileSize, thumbnail, type }) => ({
-      id, name, fileName, fileSize, thumbnail, type,
+    const metas: ModelMeta[] = models.map(({ id, name, fileName, fileSize, thumbnail, type, hasAudio, durationSec }) => ({
+      id, name, fileName, fileSize, thumbnail, type, hasAudio, durationSec,
     }));
     this.broadcast({ type: 'model-list', payload: metas });
   }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { DropZone } from '../components/DropZone';
@@ -6,19 +6,20 @@ import { ModelGallery } from '../components/ModelGallery';
 import { ModelViewer } from '../components/ModelViewer';
 import { ARViewer } from '../components/ARViewer';
 import { VRScene } from '../components/VRScene';
-import { XRViewer } from '../components/XRViewer';
+import { XRViewer, xrStore } from '../components/XRViewer';
+import { MocapView } from '../components/MocapView';
 import { RoomScanViewer } from '../components/RoomScanViewer';
 import { ViewerErrorBoundary } from '../components/ViewerErrorBoundary';
-import { useModels } from '../hooks/useModels';
+import { useModels, guessTypeFromFileName } from '../hooks/useModels';
 import { useRoom } from '../hooks/useRoom';
-import type { StoredModel } from '../types';
+import type { StoredModel, ItemType } from '../types';
 
 export function Room() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { models, animations, items, addModelFromFile, deleteModelById, refresh } = useModels();
+  const { models, animations, mocaps, addModelFromFile, addMocapRecording, deleteModelById, refresh } = useModels();
   const [viewing, setViewing] = useState<StoredModel | null>(null);
-  const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr'>('3d');
+  const [viewMode, setViewMode] = useState<'3d' | 'ar' | 'xr' | 'vr' | 'mocap'>('3d');
   const [modelScale, setModelScale] = useState(100);
   const [occlusionEnabled, setOcclusionEnabled] = useState(true);
   const [handsEnabled, setHandsEnabled] = useState(true);
@@ -27,6 +28,7 @@ export function Room() {
   const [activeAnimation, setActiveAnimation] = useState<string | null>(null);
   const [animationLoop, setAnimationLoop] = useState(true);
   const [showScan, setShowScan] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState<{ file: File; defaultType: ItemType } | null>(null);
   const [isHost] = useState(() => {
     const key = `3dqv-host-${roomId}`;
     if (!sessionStorage.getItem(key)) {
@@ -49,9 +51,23 @@ export function Room() {
   } = useRoom({ roomId: roomId!, isHost, enabled: !!roomId });
 
   const handleFile = useCallback(async (file: File) => {
-    await addModelFromFile(file, roomId);
+    const ext = file.name.toLowerCase().split('.').pop() ?? '';
+    // Ambiguous formats: ask user. Others (obj/stl) save directly as model.
+    if (ext === 'glb' || ext === 'gltf' || ext === 'fbx') {
+      setPendingUpload({ file, defaultType: guessTypeFromFileName(file.name) });
+      return;
+    }
+    await addModelFromFile(file, roomId, 'model');
     broadcastModelList();
   }, [addModelFromFile, roomId, broadcastModelList]);
+
+  const confirmUpload = useCallback(async (type: ItemType) => {
+    if (!pendingUpload) return;
+    const file = pendingUpload.file;
+    setPendingUpload(null);
+    await addModelFromFile(file, roomId, type);
+    broadcastModelList();
+  }, [pendingUpload, addModelFromFile, roomId, broadcastModelList]);
 
   const handleDelete = useCallback(async (id: string) => {
     await deleteModelById(id);
@@ -79,6 +95,28 @@ export function Room() {
     URL.revokeObjectURL(url);
   }, []);
 
+  const handleExportMp3 = useCallback(async (model: StoredModel) => {
+    if (model.type !== 'mocap' || !model.hasAudio) return;
+    try {
+      const { getMocapAudio } = await import('../lib/storage');
+      const { encodeToMp3 } = await import('../lib/mp3Export');
+      const audio = await getMocapAudio(model.id);
+      if (!audio) throw new Error('Audio-Blob nicht gefunden');
+      const mp3Blob = await encodeToMp3(new Blob([audio.data], { type: audio.mimeType }));
+      const url = URL.createObjectURL(mp3Blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${model.name}.mp3`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('[MP3 export] failed:', e);
+      alert('MP3-Export fehlgeschlagen: ' + (e as Error).message);
+    }
+  }, []);
+
   useEffect(() => {
     if (lastReceived > 0) {
       refresh();
@@ -94,7 +132,25 @@ export function Room() {
     return null;
   }
 
-  const libraryAnimations = animations.map((a) => ({ data: a.data, fileName: a.fileName }));
+  // Stable reference — otherwise every render rebuilds this, the library
+  // useEffect in ModelViewer/XRViewer re-parses, setAnimations fires, and the
+  // active clip action gets stopped+replayed each frame (→ first-frame-only).
+  const libraryAnimations = useMemo(
+    () => animations.map((a) => ({ data: a.data, fileName: a.fileName })),
+    [animations],
+  );
+  // Library mocaps: pass recordings so the 3D viewer can offer them in the
+  // animation picker alongside FBX/GLB clips. Audio is loaded lazily by
+  // ModelViewer when the user selects a specific mocap.
+  const libraryMocaps = useMemo(
+    () => mocaps.map((m) => ({
+      id: m.id,
+      name: m.name,
+      data: m.data,
+      hasAudio: !!m.hasAudio,
+    })),
+    [mocaps],
+  );
 
   if (showScan) {
     return (
@@ -127,6 +183,17 @@ export function Room() {
               background: '#111', borderBottom: '1px solid #333',
             }}>
               <button onClick={() => { setViewing(null); setViewMode('3d'); }} style={{ ...backBtnStyle, padding: '8px 14px', fontSize: 14 }}>Zurueck</button>
+              <button
+                onClick={() => xrStore.enterAR()}
+                style={{
+                  background: '#6c63ff', color: '#fff', border: 'none',
+                  borderRadius: 10, padding: '10px 18px', fontSize: 15,
+                  fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap',
+                  boxShadow: '0 2px 8px rgba(108,99,255,0.35)',
+                }}
+              >
+                🥽 AR starten
+              </button>
               <div style={{ flex: 1 }} />
               <span style={{ color: '#fff', fontSize: 16, fontWeight: 700 }}>{modelScale}%</span>
               <input type="range" min={50} max={200} value={modelScale}
@@ -158,7 +225,7 @@ export function Room() {
 
             <div style={{ height: 1, overflow: 'hidden', opacity: 0 }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
-                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} autoEnter activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnimations} />}
+                {viewMode === 'xr' && <XRViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnimations} />}
                 {viewMode === 'vr' && <VRScene modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} activeAnimation={activeAnimation} animationLoop={animationLoop} onAnimationsFound={(names) => { setAnimationNames(names); if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]); }} depthOcclusion={occlusionEnabled} showHands={handsEnabled} libraryAnimations={libraryAnimations} />}
               </ViewerErrorBoundary>
             </div>
@@ -281,17 +348,100 @@ export function Room() {
               <div style={{ display: 'flex', gap: 2, background: 'rgba(255,255,255,0.06)', borderRadius: 10, padding: 3, flexShrink: 0 }}>
                 <button onClick={() => setViewMode('3d')} style={viewMode === '3d' ? tabActiveStyle : tabStyle}>3D</button>
                 {isGlb && <button onClick={() => setViewMode('ar')} style={viewMode === 'ar' ? tabActiveStyle : tabStyle}>AR</button>}
-                <button onClick={() => setViewMode('xr')} style={tabStyle}>XR</button>
+                <button onClick={() => { setViewMode('xr'); xrStore.enterAR(); }} style={tabStyle}>XR</button>
                 <button onClick={() => setViewMode('vr')} style={tabStyle}>VR</button>
+                {isGlb && <button onClick={() => setViewMode('mocap')} style={viewMode === 'mocap' ? tabActiveStyle : tabStyle}>🎥 Mocap</button>}
               </div>
             </div>
             <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
               <ViewerErrorBoundary onReset={() => setViewMode('3d')}>
-                {viewMode === '3d' && <ModelViewer modelData={viewing.data} fileName={viewing.fileName} scale={scaleFactor} />}
+                {viewMode === '3d' && (
+                  <ModelViewer
+                    modelData={viewing.data}
+                    fileName={viewing.fileName}
+                    scale={scaleFactor}
+                    activeAnimation={activeAnimation}
+                    animationLoop={animationLoop}
+                    onAnimationsFound={(names) => {
+                      setAnimationNames(names);
+                      if (names.length > 0 && !activeAnimation) setActiveAnimation(names[0]);
+                    }}
+                    libraryAnimations={libraryAnimations}
+                    libraryMocaps={libraryMocaps}
+                  />
+                )}
                 {viewMode === 'ar' && <ARViewer modelData={viewing.data} fileName={viewing.fileName} />}
+                {viewMode === 'mocap' && (
+                  <MocapView
+                    modelData={viewing.data}
+                    fileName={viewing.fileName}
+                    scale={scaleFactor}
+                    onMocapSaved={async (p) => {
+                      await addMocapRecording({ ...p, roomId });
+                      broadcastModelList();
+                    }}
+                  />
+                )}
               </ViewerErrorBoundary>
+
+              {viewMode === '3d' && animationNames.length > 0 && (
+                <div style={{
+                  position: 'absolute', top: 12, left: 12, right: 12,
+                  background: 'rgba(22,22,42,0.9)', borderRadius: 12,
+                  padding: 10, backdropFilter: 'blur(8px)',
+                  display: 'flex', flexDirection: 'column', gap: 8,
+                  maxHeight: '40%', overflow: 'auto', zIndex: 4,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>🎬 Animation</span>
+                    <div style={{ flex: 1 }} />
+                    <button
+                      onClick={() => setAnimationLoop(!animationLoop)}
+                      style={{
+                        background: animationLoop ? '#4caf50' : '#555',
+                        color: '#fff', border: 'none', borderRadius: 6,
+                        padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+                      }}
+                    >
+                      {animationLoop ? '🔁 Loop' : '▶️ Einmal'}
+                    </button>
+                    <button
+                      onClick={() => setActiveAnimation(null)}
+                      style={{
+                        background: '#d32f2f', color: '#fff', border: 'none',
+                        borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+                      }}
+                    >
+                      ⏹ Stop
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    {animationNames.map((name) => (
+                      <button
+                        key={name}
+                        onClick={() => setActiveAnimation(name)}
+                        style={{
+                          background: activeAnimation === name ? '#fff' : 'rgba(255,255,255,0.15)',
+                          color: activeAnimation === name ? '#333' : '#fff',
+                          border: 'none', borderRadius: 6,
+                          padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+                          fontWeight: activeAnimation === name ? 700 : 400,
+                        }}
+                      >
+                        ▶ {name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <button
-                onClick={() => setViewMode('xr')}
+                onClick={() => {
+                  setViewMode('xr');
+                  // Fire enterAR synchronously — preserves transient activation
+                  // so browsers accept the WebXR session request. The XR canvas
+                  // mounts right after and picks up the pending session.
+                  xrStore.enterAR();
+                }}
                 style={{
                   position: 'absolute',
                   bottom: 24,
@@ -403,27 +553,156 @@ export function Room() {
           )}
         </div>
 
-        <div style={{ flex: 1, minWidth: 300 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0, marginBottom: 16 }}>
-            Galerie
-            <span style={{ fontSize: 13, fontWeight: 400, color: '#888', marginLeft: 12 }}>
-              {models.length} Modell{models.length !== 1 ? 'e' : ''} · {animations.length} Animation{animations.length !== 1 ? 'en' : ''}
-            </span>
-          </h2>
-          <ModelGallery
-            localModels={items}
-            remoteModels={remoteModels}
-            transfers={transfers}
-            onView={setViewing}
-            onDelete={handleDelete}
-            onSave={handleSave}
-            onSend={handleSend}
-            onDownload={handleDownload}
-            showSend={peers.length > 0}
-            showDownload={true}
-            emptyLabel="Noch nichts vorhanden — ziehe ein Modell (.glb/.gltf/.obj/.stl) oder eine FBX-Animation hierher"
-          />
+        <div style={{ flex: 1, minWidth: 300, display: 'flex', flexDirection: 'column', gap: 32 }}>
+          <section>
+            <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0, marginBottom: 16 }}>
+              🧊 Modelle
+              <span style={{ fontSize: 13, fontWeight: 400, color: '#888', marginLeft: 12 }}>
+                {models.length}
+              </span>
+            </h2>
+            <ModelGallery
+              localModels={models}
+              remoteModels={remoteModels.filter((m) => m.type !== 'animation')}
+              transfers={transfers}
+              onView={setViewing}
+              onDelete={handleDelete}
+              onSave={handleSave}
+              onSend={handleSend}
+              onDownload={handleDownload}
+              showSend={peers.length > 0}
+              showDownload={true}
+              emptyLabel="Noch keine Modelle — ziehe ein GLB/GLTF/OBJ/STL hierher"
+            />
+          </section>
+
+          <section>
+            <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0, marginBottom: 16 }}>
+              🎬 Animationen
+              <span style={{ fontSize: 13, fontWeight: 400, color: '#888', marginLeft: 12 }}>
+                {animations.length}
+              </span>
+            </h2>
+            <ModelGallery
+              localModels={animations}
+              remoteModels={remoteModels.filter((m) => m.type === 'animation')}
+              transfers={transfers}
+              onView={setViewing}
+              onDelete={handleDelete}
+              onSave={handleSave}
+              onSend={handleSend}
+              onDownload={handleDownload}
+              showSend={peers.length > 0}
+              showDownload={true}
+              emptyLabel="Noch keine Animationen — ziehe eine FBX/GLB hierher und waehle 'Animation'"
+            />
+          </section>
+
+          <section>
+            <h2 style={{ fontSize: 18, fontWeight: 700, marginTop: 0, marginBottom: 16 }}>
+              🎬🔊 Mocap-Aufnahmen
+              <span style={{ fontSize: 13, fontWeight: 400, color: '#888', marginLeft: 12 }}>
+                {mocaps.length}
+              </span>
+            </h2>
+            <ModelGallery
+              localModels={mocaps}
+              remoteModels={remoteModels.filter((m) => m.type === 'mocap')}
+              transfers={transfers}
+              onView={setViewing}
+              onDelete={handleDelete}
+              onSave={handleSave}
+              onSend={handleSend}
+              onDownload={handleDownload}
+              onExportMp3={handleExportMp3}
+              showSend={peers.length > 0}
+              showDownload={true}
+              emptyLabel="Noch keine Mocap-Aufnahmen — oeffne ein Modell, wechsle in Mocap-Tab und klick 🔴 Aufnehmen"
+            />
+          </section>
         </div>
+      </div>
+
+      {pendingUpload && (
+        <UploadTypeModal
+          fileName={pendingUpload.file.name}
+          defaultType={pendingUpload.defaultType}
+          onConfirm={confirmUpload}
+          onCancel={() => setPendingUpload(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function UploadTypeModal({
+  fileName,
+  defaultType,
+  onConfirm,
+  onCancel,
+}: {
+  fileName: string;
+  defaultType: ItemType;
+  onConfirm: (type: ItemType) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1000, padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: '#16162a', borderRadius: 16, padding: 28,
+          maxWidth: 440, width: '100%', textAlign: 'center',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+        }}
+      >
+        <div style={{ fontSize: 32, marginBottom: 12 }}>📥</div>
+        <h3 style={{ color: '#fff', margin: '0 0 8px', fontSize: 18 }}>
+          Was ist das fuer eine Datei?
+        </h3>
+        <div style={{ color: '#888', fontSize: 13, marginBottom: 24, wordBreak: 'break-all' }}>
+          {fileName}
+        </div>
+        <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+          <button
+            onClick={() => onConfirm('model')}
+            style={{
+              flex: 1, padding: '14px 16px',
+              background: defaultType === 'model' ? '#6c63ff' : 'rgba(255,255,255,0.08)',
+              color: '#fff', border: defaultType === 'model' ? '2px solid #9c8fff' : '2px solid #333',
+              borderRadius: 12, fontSize: 15, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            🧊 Modell
+          </button>
+          <button
+            onClick={() => onConfirm('animation')}
+            style={{
+              flex: 1, padding: '14px 16px',
+              background: defaultType === 'animation' ? '#6c63ff' : 'rgba(255,255,255,0.08)',
+              color: '#fff', border: defaultType === 'animation' ? '2px solid #9c8fff' : '2px solid #333',
+              borderRadius: 12, fontSize: 15, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            🎬 Animation
+          </button>
+        </div>
+        <button
+          onClick={onCancel}
+          style={{
+            marginTop: 16, background: 'none', color: '#888',
+            border: 'none', fontSize: 13, cursor: 'pointer',
+          }}
+        >
+          Abbrechen
+        </button>
       </div>
     </div>
   );

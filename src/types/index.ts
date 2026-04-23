@@ -1,4 +1,4 @@
-export type ItemType = 'model' | 'animation';
+export type ItemType = 'model' | 'animation' | 'mocap';
 
 export interface StoredModel {
   id: string;
@@ -10,6 +10,10 @@ export interface StoredModel {
   createdAt: number;
   roomId?: string;
   type?: ItemType; // undefined == 'model' for backwards compat
+  /** Only relevant for type==='mocap': whether a linked audio blob exists. */
+  hasAudio?: boolean;
+  /** Only relevant for type==='mocap': duration in seconds. */
+  durationSec?: number;
 }
 
 export interface RoomState {
@@ -27,8 +31,23 @@ export interface TransferProgress {
 }
 
 export interface PeerMessage {
-  type: 'model-list' | 'model-request' | 'model-chunk' | 'model-meta' | 'model-complete';
+  type:
+    | 'model-list' | 'model-request' | 'model-chunk' | 'model-meta' | 'model-complete'
+    | 'mocap-audio-request' | 'mocap-audio-meta' | 'mocap-audio-chunk' | 'mocap-audio-complete';
   payload: unknown;
+}
+
+export interface MocapAudioMeta {
+  id: string;
+  mimeType: string;
+  fileSize: number;
+}
+
+export interface MocapAudioChunk {
+  id: string;
+  chunkIndex: number;
+  totalChunks: number;
+  data: string; // base64
 }
 
 export interface ModelMeta {
@@ -38,6 +57,8 @@ export interface ModelMeta {
   fileSize: number;
   thumbnail?: string;
   type?: ItemType;
+  hasAudio?: boolean;
+  durationSec?: number;
 }
 
 export interface ModelChunk {

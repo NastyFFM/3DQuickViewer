@@ -8,18 +8,19 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as THREE from 'three';
 
-// Single store with all features enabled
-const store = createXRStore({
+// Single store with all features enabled — exported so Room can call enterAR
+// from a real user-gesture handler (preserves transient activation).
+export const xrStore = createXRStore({
   hand: { touchPointer: true, rayPointer: true },
   controller: { rayPointer: true },
   depthSensing: true,
 });
+const store = xrStore;
 
 interface XRViewerProps {
   modelData: ArrayBuffer;
   fileName: string;
   scale?: number;
-  autoEnter?: boolean;
   activeAnimation?: string | null;
   animationLoop?: boolean;
   onAnimationsFound?: (names: string[]) => void;
@@ -61,9 +62,13 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
           centerAndScale(gltf.scene);
           setObject(gltf.scene);
           if (gltf.animations.length > 0) {
-            setAnimations(gltf.animations);
-            const names = gltf.animations.map((a) => a.name || `Animation ${gltf.animations.indexOf(a)}`);
-            onAnimationsFound?.(names);
+            // Merge so we don't clobber library clips parsed concurrently.
+            setAnimations((prev) => {
+              const libClips = prev.filter((c) => c.name.startsWith('📚'));
+              const merged = [...gltf.animations, ...libClips];
+              onAnimationsFound?.(merged.map((c) => c.name));
+              return merged;
+            });
           }
         });
       } else if (ext === 'obj') {
@@ -205,19 +210,16 @@ function HandVisibility({ visible }: { visible: boolean }) {
   return null;
 }
 
-export function XRViewer({ modelData, fileName, scale = 1, autoEnter = false, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true, libraryAnimations = [] }: XRViewerProps) {
+export function XRViewer({ modelData, fileName, scale = 1, activeAnimation, animationLoop = true, onAnimationsFound, showHands = true, libraryAnimations = [] }: XRViewerProps) {
   const [xrSupported, setXrSupported] = useState(false);
 
   useEffect(() => {
     if (navigator.xr) {
-      navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-        setXrSupported(supported);
-        if (supported && autoEnter) {
-          store.enterAR();
-        }
-      });
+      navigator.xr.isSessionSupported('immersive-ar').then(setXrSupported);
     }
-  }, [autoEnter]);
+    // Note: autoEnter is kept for API compat but we no longer trigger here —
+    // Room.tsx calls xrStore.enterAR() directly on click to preserve gesture.
+  }, []);
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#1a1a2e' }}>

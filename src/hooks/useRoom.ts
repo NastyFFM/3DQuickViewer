@@ -86,6 +86,12 @@ export function useRoom({ roomId, isHost, enabled = true }: UseRoomOptions): Use
       onModelReceivedRef.current?.(model);
     };
 
+    peer.onMocapAudioReceived = () => {
+      // Bump lastReceived so the page's useEffect triggers a refresh and
+      // picks up the new hasAudio linkage for the mocap item.
+      setLastReceived(Date.now());
+    };
+
     peer.connect().catch((err) => {
       setError(err.message);
     });

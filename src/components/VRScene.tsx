@@ -67,9 +67,12 @@ function GrabbableModel({ modelData, fileName, scale = 1, activeAnimation = null
           centerAndScale(gltf.scene);
           setObject(gltf.scene);
           if (gltf.animations.length > 0) {
-            setAnimations(gltf.animations);
-            const names = gltf.animations.map((a) => a.name || `Animation ${gltf.animations.indexOf(a)}`);
-            onAnimationsFound?.(names);
+            setAnimations((prev) => {
+              const libClips = prev.filter((c) => c.name.startsWith('📚'));
+              const merged = [...gltf.animations, ...libClips];
+              onAnimationsFound?.(merged.map((c) => c.name));
+              return merged;
+            });
           }
         });
       } else if (ext === 'obj') {

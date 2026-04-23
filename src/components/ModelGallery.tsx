@@ -9,6 +9,8 @@ interface ModelGalleryProps {
   onSave?: (model: StoredModel) => void;
   onSend?: (id: string) => void;
   onDownload?: (id: string) => void;
+  /** Only used for mocap items — export audio blob as MP3. */
+  onExportMp3?: (model: StoredModel) => void;
   showSend?: boolean;
   showDownload?: boolean;
   emptyLabel?: string;
@@ -20,8 +22,10 @@ function formatSize(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-function iconFor(type: ItemType | undefined): string {
-  return type === 'animation' ? '🎬' : '🧊';
+function iconFor(type: ItemType | undefined, hasAudio?: boolean): string {
+  if (type === 'mocap') return hasAudio ? '🎬🔊' : '🎬';
+  if (type === 'animation') return '🎬';
+  return '🧊';
 }
 
 function ModelCard({
@@ -29,6 +33,8 @@ function ModelCard({
   fileName,
   fileSize,
   type,
+  hasAudio,
+  durationSec,
   isLocal,
   isTransferring,
   progress,
@@ -37,6 +43,7 @@ function ModelCard({
   onSave,
   onSend,
   onDownload,
+  onExportMp3,
   showSend,
   showDownload,
 }: {
@@ -44,6 +51,8 @@ function ModelCard({
   fileName: string;
   fileSize: number;
   type: ItemType | undefined;
+  hasAudio?: boolean;
+  durationSec?: number;
   isLocal: boolean;
   isTransferring?: boolean;
   progress?: number;
@@ -52,10 +61,17 @@ function ModelCard({
   onSave?: () => void;
   onSend?: () => void;
   onDownload?: () => void;
+  onExportMp3?: () => void;
   showSend?: boolean;
   showDownload?: boolean;
 }) {
   const isAnimation = type === 'animation';
+  const isMocap = type === 'mocap';
+  const borderColor = isMocap
+    ? 'rgba(198,40,40,0.4)'
+    : isAnimation
+      ? 'rgba(233, 180, 99, 0.3)'
+      : 'transparent';
   return (
     <div
       style={{
@@ -65,17 +81,21 @@ function ModelCard({
         display: 'flex',
         flexDirection: 'column',
         gap: 8,
-        border: isAnimation ? '1px solid rgba(233, 180, 99, 0.3)' : '1px solid transparent',
+        border: `1px solid ${borderColor}`,
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 24 }}>{iconFor(type)}</span>
+        <span style={{ fontSize: 24 }}>{iconFor(type, hasAudio)}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {name}
           </div>
           <div style={{ fontSize: 12, color: '#888' }}>
-            {formatSize(fileSize)} — {isAnimation ? 'Animation' : fileName.split('.').pop()?.toUpperCase()}
+            {formatSize(fileSize)} — {isMocap
+              ? `Mocap${durationSec ? ` ${durationSec.toFixed(1)}s` : ''}`
+              : isAnimation
+                ? 'Animation'
+                : fileName.split('.').pop()?.toUpperCase()}
           </div>
         </div>
       </div>
@@ -94,11 +114,14 @@ function ModelCard({
       )}
 
       <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-        {isLocal && !isAnimation && onView && (
+        {isLocal && !isAnimation && !isMocap && onView && (
           <button onClick={onView} style={btnStyle}>Ansehen</button>
         )}
         {isLocal && onSave && (
           <button onClick={onSave} style={{ ...btnStyle, background: '#1565c0' }}>Speichern</button>
+        )}
+        {isLocal && isMocap && hasAudio && onExportMp3 && (
+          <button onClick={onExportMp3} style={{ ...btnStyle, background: '#8e24aa' }}>MP3</button>
         )}
         {!isLocal && showDownload && onDownload && (
           <button onClick={onDownload} style={btnStyle}>Laden</button>
@@ -134,6 +157,7 @@ export function ModelGallery({
   onSave,
   onSend,
   onDownload,
+  onExportMp3,
   showSend,
   showDownload,
   emptyLabel = 'Noch keine Modelle vorhanden',
@@ -160,6 +184,8 @@ export function ModelGallery({
             fileName={model.fileName}
             fileSize={model.fileSize}
             type={model.type}
+            hasAudio={model.hasAudio}
+            durationSec={model.durationSec}
             isLocal
             isTransferring={!!transfer}
             progress={transfer?.progress}
@@ -167,6 +193,7 @@ export function ModelGallery({
             onDelete={() => onDelete(model.id)}
             onSave={onSave ? () => onSave(model) : undefined}
             onSend={onSend ? () => onSend(model.id) : undefined}
+            onExportMp3={onExportMp3 ? () => onExportMp3(model) : undefined}
             showSend={showSend}
           />
         );

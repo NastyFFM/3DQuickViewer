@@ -2,10 +2,93 @@
 
 ## Ueberblick
 
-P2P 3D-Modell-Viewer: Desktop-Browser laedt Modelle hoch, Quest/Handy betrachtet sie in VR/AR. Kein Server-Upload noetig — Modelle werden direkt via WebRTC zwischen Geraeten uebertragen.
+P2P 3D-Modell-Viewer: Desktop-Browser laedt Modelle hoch, Quest/Handy betrachtet sie in VR/AR. Kein Server-Upload noetig — Modelle werden direkt via WebRTC zwischen Geraeten uebertragen. Zusaetzlich: Live-Motion-Capture ueber die Webcam (MediaPipe Pose Landmarker) und ein Mocap-Recorder der Bewegung + Mikrofon-Audio synchron aufzeichnet und spaeter wiedergeben kann.
 
 **Live:** https://nastyffm.github.io/3DQuickViewer/
 **Repo:** https://github.com/NastyFFM/3DQuickViewer
+
+---
+
+## Aktueller Stand: v82 (lokal, noch nicht gepusht)
+
+### Bekannter Bug
+
+**Nutzer-Bericht:** Nach Umstellung auf v82 koennen **Modelle und Animationen nicht mehr geladen werden**. Genaue Konsolen-Fehlermeldung liegt noch nicht vor. Vermutete Ursachen:
+- IndexedDB-Upgrade auf v4 (neuer `mocap-audio` Store) fuehrt zu einem Laufzeit-Problem
+- Oder ein Top-Level-Import-Fehler in einer der neu angelegten Libs (`mocapExport.ts`, `mp3Export.ts`)
+- Build + TypeScript sind sauber → Fehler ist Runtime, nicht Compile-Zeit
+
+**Diagnose zuerst:** Nutzer nach genauer DevTools-Console-Meldung fragen. Ggf. DB-Reset via `indexedDB.deleteDatabase('3dquickviewer')`.
+
+### v82-Features (Mocap-Recorder)
+
+**Recorder-Workflow:**
+1. Modell oeffnen → Tab `🎥 Mocap` → `🔒 Kalibrieren` (Countdown) → `🔴 Aufnehmen` (Countdown) → bewegen + ins Mikrofon sprechen → `⏹ Stop` → Save-Dialog mit Name → gespeichert
+2. Galerie zeigt neue Sektion `🎬🔊 Mocap-Aufnahmen` — Kacheln mit Speichern/Senden/Loeschen/MP3-Buttons
+3. Playback im 3D-View: die Mocap erscheint im Animation-Picker mit `🎬🔊 `-Prefix; Auswahl startet Animation + Audio synchron
+
+**Technisch:**
+- Audio via `MediaRecorder` als WebM/Opus; MIME-Fallback-Chain fuer Quest
+- Pro-Frame Bone-Local-Quaternions im Ref-Buffer (kein React-Rerender)
+- Eigenes JSON-Format `MocapPayload` (in `src/lib/mocapExport.ts`), kein GLB — vermeidet GLTFExporter-Komplexitaet
+- `THREE.QuaternionKeyframeTrack` pro Bone → `AnimationClip` → durch `AnimationMixer` abgespielt
+- IndexedDB v4: neuer Store `mocap-audio`, linked by id an `StoredModel`
+- Neuer `StoredModel.type = 'mocap'` mit `hasAudio` + `durationSec` Flags
+- MP3-Export on-demand via lamejs (lazy-loaded Chunk, ~173KB)
+- P2P: nach `model-complete` fuer mocap automatisch `mocap-audio-request` → Chunk-Transfer
+
+### v52-v81 Changelog (komprimiert)
+
+| Version | Aenderung |
+|---------|-----------|
+| v52 | FBX-Animationen als StoredModel mit `type='animation'` |
+| v53 | IDB-Migration v3, async upgrade fix |
+| v54 | Upload-Type-Dialog (Modell vs. Animation), Galerie-Split |
+| v55 | `xrStore` exportiert, AR-Start per User-Geste |
+| v56 | Animationen im 3D-View anwenden (inkl. Library-Animationen) |
+| v57 | Mixamo-Retargeter mit side-aware candidate names |
+| v58 | Stable `libraryAnimations` ref (fix: frame-1-only) |
+| v59 | Model+Library Merge-Race-Fix via functional setState |
+| v60-61 | Mocap-Live (MediaPipe Pose Landmarker) in neuem Tab |
+| v62 | Parallel getUserMedia + MediaPipe load |
+| v63-64 | Webcam-Preview resizable (4 Ecken) |
+| v65-66 | `worldLandmarks` statt `landmarks`, Diagnose-Logs |
+| v67-68 | Bone-Mapping-Panel mit Kopier-Button |
+| v69-72 | Tripo-Rig-Bones unterstuetzen, Z-Flip, 180°-Y-Group-Rotation |
+| v73 | Bone-Roll-Fix via bindRef + restRef (Kalibrierung) |
+| v74 | 3s-Countdown vor Kalibrierung |
+| v75 | Kalibrierung blockiert Mocap-Drive bis erster Klick |
+| v76 | Skeleton-derived Rest-Richtung |
+| v77 | Bind-Pose-Reset bei jeder neuen Kalibrierung |
+| v78 | Per-Joint-Offsets (verworfen) |
+| v79 | Globaler Axis-Swap via Konjugation (verworfen) |
+| v80 | Achsen-Permutation (6 Optionen: XYZ/XZY/YXZ/YZX/ZXY/ZYX) |
+| v81 | Tripo-Defaults: `ZYX` + Flip `X=on Y=off Z=on` |
+| **v82** | **Mocap-Recorder mit Audio (siehe oben)** |
+
+### Dateilayout (v82)
+
+Zu den Original-Komponenten hinzugefuegt / veraendert:
+
+```
+src/
+├── components/
+│   ├── MocapView.tsx         ⚡ Audio-Stream, Recorder, Save-Dialog, Pose-Buffer
+│   ├── ModelViewer.tsx       ⚡ libraryMocaps, Mocap→Clip, Audio-Sync
+│   └── ModelGallery.tsx      ⚡ Mocap-Kachel-Rendering, MP3-Button
+├── hooks/
+│   ├── useModels.ts          ⚡ mocaps-Liste, addMocapRecording
+│   └── useRoom.ts            ⚡ onMocapAudioReceived Callback
+├── lib/
+│   ├── storage.ts            ⚡ DB v4, mocap-audio Store
+│   ├── peer.ts               ⚡ mocap-audio-* Messages
+│   ├── mocapExport.ts        ✨ NEU — JSON-Format, buildAnimationClip
+│   └── mp3Export.ts          ✨ NEU — WebM→MP3 (lazy lamejs)
+├── pages/
+│   └── Room.tsx              ⚡ libraryMocaps, Galerie-Sektion, handleExportMp3
+└── types/
+    └── index.ts              ⚡ 'mocap' type, hasAudio, MocapAudioMeta/Chunk
+```
 
 ---
 

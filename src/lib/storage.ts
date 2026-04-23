@@ -2,9 +2,16 @@ import { openDB, type IDBPDatabase } from 'idb';
 import type { StoredModel, ModelMeta } from '../types';
 
 const DB_NAME = '3dquickviewer';
-const DB_VERSION = 3; // v3: unified models + animations into one store via `type` field
+const DB_VERSION = 4; // v4: adds mocap-audio store (linked to StoredModel by id)
 const MODELS_STORE = 'models';
 const ANIMS_STORE = 'animations'; // legacy — only read during migration
+const MOCAP_AUDIO_STORE = 'mocap-audio';
+
+export interface StoredMocapAudio {
+  id: string;              // matches StoredModel.id of the mocap item
+  data: ArrayBuffer;       // webm/ogg/mp4 bytes
+  mimeType: string;
+}
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -17,6 +24,9 @@ function getDB() {
         }
         if (!db.objectStoreNames.contains(ANIMS_STORE)) {
           db.createObjectStore(ANIMS_STORE, { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains(MOCAP_AUDIO_STORE)) {
+          db.createObjectStore(MOCAP_AUDIO_STORE, { keyPath: 'id' });
         }
         if (oldVersion > 0 && oldVersion < 3) {
           // Migrate old animations into the unified models store
@@ -59,6 +69,24 @@ export async function getModelMetas(): Promise<ModelMeta[]> {
   return models.map(({ id, name, fileName, fileSize, thumbnail, type }) => ({
     id, name, fileName, fileSize, thumbnail, type,
   }));
+}
+
+// --- Mocap audio (linked to mocap StoredModel by shared id) ---
+
+export async function saveMocapAudio(id: string, blob: Blob): Promise<void> {
+  const data = await blob.arrayBuffer();
+  const db = await getDB();
+  await db.put(MOCAP_AUDIO_STORE, { id, data, mimeType: blob.type || 'audio/webm' });
+}
+
+export async function getMocapAudio(id: string): Promise<StoredMocapAudio | undefined> {
+  const db = await getDB();
+  return db.get(MOCAP_AUDIO_STORE, id);
+}
+
+export async function deleteMocapAudio(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete(MOCAP_AUDIO_STORE, id);
 }
 
 export function generateId(): string {
